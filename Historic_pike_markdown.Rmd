@@ -1,0 +1,67 @@
+---
+title: "Historic_pike_analysis"
+author: "TR"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r packages, include=FALSE}
+library(data.table)
+library(tidyverse)
+```
+
+
+```{r data exploration, include=FALSE, eval=FALSE}
+#Create overview list of pike for which SI data and scale readings exist to identify fish that need SI reading
+
+rm(list = ls())
+Isopike <- fread("Data/whole-sample-muscle-SI.csv")
+Pikescales <- fread("Data/Transmitter-pike-ages-with-TL.csv")
+
+Pike1 <- fread("C:/Users/timor/Nextcloud2/Boddenhecht/Data/Pike Data/1.pike_data_base_FOR_USERS/1Pike_Latest_Version.txt")
+
+Pike2 <- Pike1%>%
+  transmute(ID=Fish_ID,
+            waterbody=Waterbody,
+            sex=Sex,
+            date=Date,
+            weight=Weight,
+            TL_mm=Total_Length_mm,
+            Recap=MarkorRecap,
+            Tele=case_when(is.na(Transmitter_Num)==FALSE~"Yes",
+                           TRUE~"NA"))%>%
+  filter(Tele == "Yes")%>%
+  distinct()
+
+#Check transmitter fish SI with database (?)
+Transcheck <- Pike2 %>%
+  left_join(PikeSI, by = "ID")%>%
+  transmute(ID, Tele, d13C, d15N, d34S)%>%
+  drop_na(d13C)%>%
+  distinct()
+
+length(unique(Transcheck$ID))
+
+#Check for which fish both data are there
+Pike2 <- Pike%>%
+  transmute(ID=ID,
+            area=area,
+            SI="Yes")%>%
+  distinct()
+
+Pikescales2 <- Pikescales%>%
+  transmute(ID=fish_ID,
+            waterbody=waterbody,
+            Scaleage="Yes")
+
+Pikecheck <- Pikescales2%>%
+  left_join(Pike2, by = "ID")%>%
+  distinct()
+
+length(Pikecheck[Pikecheck$SI=="Yes"]$ID)
+```
+
