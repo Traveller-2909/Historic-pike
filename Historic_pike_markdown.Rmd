@@ -17,15 +17,56 @@ library(tidyverse)
 
 ```{r data exploration, include=FALSE, eval=FALSE}
 #Create overview list of pike for which SI data and scale readings exist to identify fish that need SI reading
+#Script uses already processed data, will change when data is run through final data check of MS 3
 
 rm(list = ls())
+#Complete isotope dataset
 Isopike <- fread("Data/whole-sample-muscle-SI.csv")
+#Scale data for transmitter pike
 Pikescales <- fread("Data/Transmitter-pike-ages-with-TL.csv")
-
+#Otolith age data
+Pikeoto <- fread("Data/Otolith-ages-TL.csv")
+#Database
 Pike1 <- fread("C:/Users/timor/Nextcloud2/Boddenhecht/Data/Pike Data/1.pike_data_base_FOR_USERS/1Pike_Latest_Version.txt")
 
+#Filter for pike with complete isotope measurements
+# Identify duplicates and check (mostly due to differences in comment --> not caught by distinct() before)
+duplicates <- Isopike2[duplicated(fish_ID) | duplicated(fish_ID, fromLast = TRUE), .SD, by = .(fish_ID)]
+
+Isopike2 <- Isopike%>%
+  mutate(CNS_complete = case_when(is.na(d13C) == TRUE | is.na(d15N) == TRUE | is.na(d34S) == TRUE ~ 0,
+                                  TRUE ~ 1))%>%
+  filter(CNS_complete == 1)%>%
+  transmute(fish_ID = ID,
+            CNS_complete)%>%
+  distinct()
+
+#All there?
+length(unique(Isopike$ID))==length(unique(Isopike2$fish_ID))
+
+#Get age reading pike
+Pikeoto2 <- Pikeoto%>%
+  transmute(fish_ID = ID,
+            age,
+            comment = "oto")%>%
+  distinct()
+
+Pikescales2 <- Pikescales%>%
+  transmute(fish_ID,
+            age,
+            comment = "trans")%>%
+  distinct()
+
+Pikeage <- rbind(Pikeoto2, Pikescales2)
+
+#Join with Isotope data, filter fish for which no age reading is there yet
+Pikeisoage <- Isopike2%>%
+  left_join(Pikeage, by = "fish_ID")%>%
+  filter(is.na(age) == TRUE)
+
+#Identify whether those are transmitter fish
 Pike2 <- Pike1%>%
-  transmute(ID=Fish_ID,
+  transmute(fish_ID=Fish_ID,
             waterbody=Waterbody,
             sex=Sex,
             date=Date,
@@ -34,34 +75,18 @@ Pike2 <- Pike1%>%
             Recap=MarkorRecap,
             Tele=case_when(is.na(Transmitter_Num)==FALSE~"Yes",
                            TRUE~"NA"))%>%
-  filter(Tele == "Yes")%>%
+  filter(Tele == "Yes" & Recap == "Mark")%>%
   distinct()
 
-#Check transmitter fish SI with database (?)
-Transcheck <- Pike2 %>%
-  left_join(PikeSI, by = "ID")%>%
-  transmute(ID, Tele, d13C, d15N, d34S)%>%
-  drop_na(d13C)%>%
+Pike3 <- Pike2%>%
+  transmute(fish_ID,
+            Tele)%>%
   distinct()
+  
+Missingpike <- Pikeisoage%>%
+  left_join(Pike3, by = "fish_ID")
 
-length(unique(Transcheck$ID))
-
-#Check for which fish both data are there
-Pike2 <- Pike%>%
-  transmute(ID=ID,
-            area=area,
-            SI="Yes")%>%
-  distinct()
-
-Pikescales2 <- Pikescales%>%
-  transmute(ID=fish_ID,
-            waterbody=waterbody,
-            Scaleage="Yes")
-
-Pikecheck <- Pikescales2%>%
-  left_join(Pike2, by = "ID")%>%
-  distinct()
-
-length(Pikecheck[Pikecheck$SI=="Yes"]$ID)
+#Check how many transmitter fish are without age
+length(Missingpike[Missingpike$Tele == "Yes",]$fish_ID)
 ```
 
