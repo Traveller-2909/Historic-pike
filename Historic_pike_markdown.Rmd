@@ -12,81 +12,1925 @@ knitr::opts_chunk$set(echo = TRUE)
 ```{r packages, include=FALSE}
 library(data.table)
 library(tidyverse)
+library(ggplot2)
+library(ggpubr)
+library(RColorBrewer)
+library(MixSIAR)
+library(plyr)
+library(FSA)
+library(rstan)
+options(mc.cores = parallel::detectCores())
+rstan_options(auto_write = TRUE)
+```
+
+```{r data cleanup, include=FALSE, eval=FALSE}
+rm(list = ls())
+
+#To be replaced once pike are in database
+Pike_loc <- fread("Data/Pike/Pike_Zuordnung_Bodden.CSV")
+
+Pike1 <- Pike_loc%>%
+  transmute(Oldenburg_ID = paste0(Tuete, ".", Stapel, ".", Tuetchen),
+            Capture_location_cor = Kernbodden_korrigiert)%>%
+  distinct()
+
+#ID as given
+Pike_ID <- fread("Data/Pike/Historic_pike_raw.CSV")
+
+Pike2 <- Pike_ID%>%
+  left_join(Pike1, by = "Oldenburg_ID")%>%
+  mutate(Capture_location = case_when(Capture_location_cor == "Nordr\xfcgener Bodden" ~ "NRB",
+                                      Capture_location_cor == "Barther Bodden" ~ "BAT",
+                                      Capture_location_cor == "Greifswalder Bodden" ~ "GB",
+                                      Capture_location_cor == "Peenestrom" ~ "P",
+                                      Capture_location_cor == "Saaler Bodden" ~ "SAB",
+                                      Capture_location_cor == "Strelasund" ~ "S",
+                                      Capture_location_cor == "" ~ "U",
+                                      Fish_ID == "BH-80002" ~ "GB",
+                                      Fish_ID == "BH-80163" ~ "P",
+                                      Fish_ID == "BH-80164" ~ "P",
+                                      Fish_ID == "BH-80166" ~ "GB",
+                                      Fish_ID == "BH-80167" ~ "GB"))%>%
+  transmute(Fish_ID,
+            Date = lubridate::date(parse_date_time(Date, "dmy")),
+            Waterbody = Capture_location,
+            Total_Length_mm = Total_Length_mm/10,
+            Sex,
+            Weight = Weight_g,
+            Oldenburg_ID)
+
+fwrite(Pike2, "Data/Pike/Historic_pike_master.csv")
+```
+
+```{r database join, include=FALSE, eval=FALSE}
+Pike1 <- readRDS("C:/Users/timor/Nextcloud2/Boddenhecht/Data/Pike Data/1.pike_data_base_FOR_USERS/1Pike_Latest_Version.rds")
+PikeH <- fread("Data/Pike/Historic_pike_master.csv")
+PikeH$Row_ID <- ((max(Pike1$Row_ID)+1):(max(Pike1$Row_ID)+nrow(PikeH)))
+
+str(Pike1)
+str(PikeH)
+
+PikeH2 <- PikeH%>%
+  reframe(Row_ID, Fish_ID,
+          Date = as.character(Date),
+          Total_Length_mm = as.integer(Total_Length_mm*10),
+          Weight = as.numeric(Weight),
+          Sex, Waterbody, Oldenburg_ID,
+          Sample_Origin = "Historic_Winkler_Samples")
+
+Pike2 <- plyr::rbind.fill(Pike1, PikeH2)
+
+saveRDS(Pike2, "C:/Users/timor/Nextcloud2/Boddenhecht/Data/Pike Data/1.pike_data_base_FOR_USERS/1Pike_Latest_Version.rds")
+fwrite(Pike2, "C:/Users/timor/Nextcloud2/Boddenhecht/Data/Pike Data/1.pike_data_base_FOR_USERS/1Pike_Latest_Version.txt")
+```
+
+```{r join with genotypes, include=FALSE, eval=FALSE}
+rm(list = ls())
+
+substrRight <- function(x, n){
+  substr(x, nchar(x)-n+1, nchar(x)-1)
+}
+
+#Load STRUCTURE output file
+geneticsdata <- read.delim("Data/Pike/struct_K5_1_f_GTinfo_historic.txt", sep = "", dec = ".", header = F, stringsAsFactors = F)
+
+#prefilter
+geneticsdata2 <- geneticsdata%>%
+  filter(!str_detect(V1, "BH")&str_detect(V1, "_"))
+
+#Replace P, S and U with double letters
+geneticsdata2$V7 <- gsub(pattern = "[^0-9.-]", replacement = '', geneticsdata2$V1)
+
+geneticsdata2 <- geneticsdata2%>%
+  mutate(V8 = paste0(substr(V7, 1, 1), ".", substr(V7, 2, 2), ".", substr(V7, 3, 20)))
+
+#Genotypes: 1 = brackish 1; 2 = brackish 2; 3 = freshwater/anadromous; 4 = brackish 3; 5 = freshwater
+Genotypes <- geneticsdata2%>%
+  transmute(Oldenburg_ID = V8,
+            cluster1 = as.numeric(V2),
+            cluster2 = as.numeric(V3),
+            cluster3 = as.numeric(V4),
+            cluster4 = as.numeric(V5),
+            cluster5 = as.numeric(V6))%>%
+  drop_na()
+
+
+Genotypes$clust <- apply(Genotypes[,c(2,3,4,5,6)], 1, FUN = which.max)
+Genotypes$clustval <- apply(Genotypes[,c(2,3,4,5,6)], 1, FUN = max)
+
+Genotypes2 <- Genotypes%>%
+  mutate(Genotype = case_when(clustval < 0.5 ~ "0",
+                            TRUE~as.character(clust)))
+
+Genotypes2$Genotype <- fct_relevel(Genotypes2$Genotype, "5", "3", "1", "2", "4", "0")
+
+Genotypes3 <- Genotypes2%>%
+  transmute(Oldenburg_ID, Genotype)
+
+#Load pike data
+Pikedata <- fread("Data/Pike/Historic_pike_master.csv")
+
+Pikedata2 <- Pikedata%>%
+  left_join(Genotypes3, by = "Oldenburg_ID")
+
+fwrite(Pikedata2, "Data/Pike/Historic_pike_master.csv")
+```
+
+# Growth analysis
+
+```{r Cleanup scale data, include=FALSE, eval=FALSE}
+rm(list = ls())
+
+Scaleread <- fread("Data/Pike/Pike-scales-main-run.csv")
+Scaleread_add <- fread("Data/Pike/Addition.csv")
+Decoder <- fread("Data/Pike/Decoding_file_Scales-historic-vs-recent_all.csv")
+
+Decoder2 <- Decoder %>%
+  filter(!(as.integer(substr(fish_ID, 4, 8)) >= 80000 & as.integer(substr(fish_ID, 4, 8)) < 90000 & year(capt_date) > 2020))
+
+Scaleread2 <- Scaleread%>%
+  filter(Quality > 0) %>%
+  transmute(random_ID = Sample,
+            quality = Quality,
+            age = Age,
+            cohort = Cohort,
+            pisc = Piscivorous,
+            I = I,
+            year = Year,
+            increment = Increment)
+
+Decoder2$random_ID <- as.integer(gsub(".jpg", "", Decoder2$random_ID))
+
+Pikeages <- Scaleread2%>%
+  left_join(Decoder2, by = "random_ID")%>%
+  distinct()
+
+Scaleread_add2 <- Scaleread_add %>%
+  filter(Quality > 0) %>%
+  transmute(fish_ID = substr(Sample, 1,8),
+            quality = Quality,
+            age = Age,
+            cohort = Cohort,
+            pisc = Piscivorous,
+            I = I,
+            year = Year,
+            increment = Increment)
+
+Pikeages_add <- Scaleread_add2 %>%
+  left_join(Decoder2, by = "fish_ID")%>%
+  distinct()
+
+Pikeages <- rbind(Pikeages, Pikeages_add)
+
+#remove suspicious (Wrong ID, double ID, etc.) individuals
+
+Pikeages2 <- Pikeages%>%
+  filter(!fish_ID %in% c("BH-90793", "BH-90017", "BH-91890", "BH-91748", "BH-90009", "BH-91620", "BH-91929", "BH-91644", "BH-00683", "BH-91882",
+                         "BH-91810", "BH-91131", "BH-91626", "BH-00674", "BH-91839"))%>%
+  filter(!random_ID %in% c(362, 3821)) %>%
+  transmute(fish_ID, TL_mm, age, cohort, weight, sex, area, capt_date, I, year, increment, pisc, quality, file_name, random_ID)
+
+ggplot(Pikeages2[Pikeages2$quality == 3,], aes(as.factor(age), TL_mm))+
+  geom_point(aes(color = sex))+
+  theme_minimal()
+
+Pikeages3 <- Pikeages2%>%
+  group_by(fish_ID)%>%
+  dplyr::summarise(fish_ID=fish_ID,
+            age=median(age, na.rm = T))%>%
+  distinct()
+
+length(unique(Pikeages3$fish_ID))
+
+Pikeages_final <- Pikeages2 %>%
+  filter(quality > 0) %>%
+  inner_join(Pikeages3, by = c("fish_ID", "age"))%>%
+  group_by(fish_ID, I)%>%
+  filter(I != "Piscivorous")%>%
+  transmute(fish_ID, TL_mm, 
+            age = case_when(month(capt_date) < 5 & month(capt_date) >= 1 ~ age + 1,
+                            TRUE ~ age), 
+            cohort = year(capt_date)-age,
+            weight, sex, area, capt_date,
+            I = case_when(I == "edge" & month(capt_date) < 5 & month(capt_date) >= 1 ~ "edgeyear",
+                          TRUE ~ I),
+            year = year,
+            increment = mean(increment), 
+            pisc = mean(pisc))%>%
+  drop_na(fish_ID)%>%
+  distinct()
+
+length(unique(Pikeages_final$fish_ID))
+
+Pikeages_final <- as.data.frame(Pikeages_final)
+
+IDpike <- unique(Pikeages_final$fish_ID)
+rad <- NULL
+for (i in 1:length(IDpike)) {
+  d <- cumsum(coalesce(Pikeages_final[which(Pikeages_final$fish_ID == IDpike[i]), "increment"], 0)) +
+    Pikeages_final[which(Pikeages_final$fish_ID == IDpike[i]), "increment"]*0
+  
+  rad <- c(rad, d)
+}
+
+Pikeages_final$rad <- rad
+
+Pikeages_final2 <- Pikeages_final %>%
+  ungroup() %>%
+  group_by(fish_ID) %>%
+  dplyr::mutate(scale_width = max(rad)) %>%
+  filter(I != "edge") %>%
+  mutate(I = case_when(I == "edgeyear" ~ age,
+                              TRUE ~ as.numeric(I)))%>%
+  transmute(fish_ID, TL_mm, age, cohort, weight, sex, area, capt_date,
+            lifeyear = I,
+            year = year(capt_date)-age+lifeyear,
+            increment, 
+            radius = rad, 
+            scale_width, pisc)
+
+#Convert pixel values into micrometers
+
+#Retrieve readers
+Fritz_scales <- fread("Data/Pike/Fritz_pike_scales_all_with_rad_checked.txt")
+Nico_scales <- fread("Data/Pike/Nico_scales_all_with_rad_checked.txt")
+
+Fritz2 <- Fritz_scales %>% transmute(fish_ID, imaging = "Marlon") %>% distinct()
+Nico2 <- Nico_scales %>% transmute(fish_ID, imaging = "Nico") %>% distinct()
+
+Fritznico <- rbind(Fritz2, Nico2)
+
+Pike_readers <- Pikeages2 %>% left_join(Fritznico, by = "fish_ID")
+
+Pike_readers2 <- Pike_readers %>%
+  transmute(fish_ID, capt_date, area, file_name, random_ID,
+            imaging = case_when(is.na(imaging) == TRUE ~ "Timo",
+                                year(capt_date) < 2000 ~ "Timo",
+                                TRUE ~ imaging)) %>%
+  distinct()
+
+# BH-00112 - BH-00753 scale = 0.1758 px / um
+# Nico BAT, SB, KB, GB, Sehrowbach 2021, Barthe, BAT 2021, BEG, Beek, P, Peene, Strelasund, Duwenbeek scale = 0.19175 px / um
+# Nico Sehrowbach 2020 scale = 0.1898 px / um
+# Timo recent, historic scale = 0.1935 px / um
+# Marlon SBKB Summer, SBKB spring, SBKB fall, GB fall, GB spring, GB summer, BAT spring, BAT summer, BAT fall scale = 0.1898 px / um
+# Marlon mixed pics scale = 0.1896 px / um
+
+Pike_scales_scale <- Pike_readers2 %>%
+  mutate(scale = case_when(as.integer(substr(fish_ID, 4, 8)) < 1000 ~ 0.1758,
+                           imaging == "Timo" ~ 0.1935,
+                           imaging == "Nico" & area != "Sehrowbach" ~ 0.19175,
+                           imaging == "Nico" & year(capt_date) < 2021 & area == "Sehrowbach" ~ 0.1898,
+                           imaging == "Nico" & year(capt_date) > 2020 & area == "Sehrowbach" ~ 0.19175,
+                           imaging == "Marlon" ~ 0.1897)) %>%
+  transmute(fish_ID, scale, imaging) %>%
+  distinct()
+
+Pikeages_final3 <- Pikeages_final2 %>%
+  left_join(Pike_scales_scale, by = "fish_ID")%>%
+  transmute(fish_ID, TL_mm, age, cohort, weight, sex, area, capt_date,lifeyear, year,
+            increment_mm = increment/scale/1000,
+            radius_mm = radius/scale/1000, 
+            scale_width_mm = scale_width/scale/1000,
+            pisc_mm = pisc/scale/1000,
+            scale, imaging)
+
+Pikemaster <- fread("Data/Pike/Historic_pike_master.csv")
+
+Pikemaster2 <- Pikemaster %>%
+  transmute(fish_ID = Fish_ID, Oldenburg_ID, Genotype)
+
+Pikemaster3 <- Pikeages_final3 %>%
+  left_join(Pikemaster2, by = "fish_ID")%>%
+  ungroup() %>%
+  transmute(Fish_ID = fish_ID,
+            TL_mm,
+            Sample = case_when(year(capt_date) < 2000 ~ "Historic",
+                               TRUE ~ "Recent"),
+            Age = age,
+            Cohort = cohort,
+            Weight = weight,
+            Sex = sex,
+            Area = area,
+            Capt_date = capt_date,
+            Lifeyear = lifeyear,
+            Year = year,
+            Increment_mm = increment_mm,
+            Radius_mm = radius_mm,
+            Scale_width_mm = scale_width_mm,
+            Pisc_mm = pisc_mm,
+            Scale = scale,
+            Imaging = imaging,
+            Oldenburg_ID, 
+            Genotype = as.factor(Genotype)) %>%
+  distinct()
+
+ggplot(Pikemaster3, aes(as.factor(Age), TL_mm))+
+  geom_point(aes(color = Sample))+
+  theme_minimal()
+
+ggplot(Pikeages_final3[Pikeages_final3$age<2,], aes(scale_width_mm, TL_mm))+
+  geom_point()+
+  geom_smooth(method = "lm")+
+  theme_minimal()
+  
+summary(lm(TL_mm ~ scale_width_mm, data = Pikeages_final3[Pikeages_final3$age<2,]))
+
+Pikemaster4 <- Pikemaster3 %>%
+  group_by(Fish_ID) %>%
+  filter(Lifeyear == max(Lifeyear)) %>%
+  mutate(Length_back = Radius_mm/Scale_width_mm*TL_mm)%>%
+  ungroup() %>%
+  distinct()
+
+Pikemaster5 <- Pikemaster3 %>%
+  left_join(Pikemaster4[,c(1,20)], by = "Fish_ID")
+
+#join genotypes
+#Load STRUCTURE output file
+geneticsdata <- read.delim("Data/Pike/struct_K5_1_f_GTinfo_historic.txt", sep = "", dec = ".", header = F, stringsAsFactors = F)
+
+substrRight <- function(x, n){
+  substr(x, nchar(x)-n+1, nchar(x))
+}
+
+#prefilter
+geneticsdata2 <- geneticsdata%>%
+  filter(str_detect(V1, "BH"))
+
+#Genotypes: 1 = brackish 1; 2 = brackish 2; 3 = freshwater/anadromous; 4 = brackish 3; 5 = freshwater
+Genotypes <- geneticsdata2%>%
+  transmute(ID=paste0(sub("_","-",substrRight(V1,8))),
+            cluster1 = as.numeric(V2),
+            cluster2 = as.numeric(V3),
+            cluster3 = as.numeric(V4),
+            cluster4 = as.numeric(V5),
+            cluster5 = as.numeric(V6))%>%
+  drop_na()
+
+
+Genotypes$clust <- apply(Genotypes[,c(2,3,4,5,6)], 1, FUN = which.max)
+Genotypes$clustval <- apply(Genotypes[,c(2,3,4,5,6)], 1, FUN = max)
+
+Genotypes2 <- Genotypes%>%
+  mutate(Genotype = case_when(clustval < 0.5 ~ "0",
+                            TRUE~as.character(clust)))
+
+Genotypes2$Genotype <- fct_relevel(Genotypes2$Genotype, "5", "3", "1", "2", "4", "0")
+
+Genotypes3 <- Genotypes2%>%
+  transmute(Fish_ID = ID, Genotype2 = Genotype)
+
+Pikemaster6 <- Pikemaster5 %>%
+  left_join(Genotypes3, by = "Fish_ID")%>%
+  mutate(Genotype = case_when(is.na(Genotype) == TRUE ~ Genotype2,
+                              TRUE ~ Genotype))%>%
+  select(!Genotype2)
+
+fwrite(Pikemaster6, "Data/Pike/Pikemaster.csv")
+```
+
+```{r Growth curve comparison whole sample, include=FALSE, eval=FALSE}
+rm(list = ls())
+
+Pikemaster <- fread("Data/Pike/Pikemaster.csv")
+
+Growthtable <- Pikemaster %>%
+  transmute(Fish_ID, TL_mm, Length_back, Sample, Age, Cohort, Sex, Area, Genotype)%>%
+  mutate(Sample = case_when(Area %in% c("Sehrowbach", "Barthe", "Peene", "KWB", "Duwenbeek", "Beek") ~ "Freshwater",
+                            TRUE ~ Sample),
+         Sample_bin = case_when(Sample == "Recent" ~ 1,
+                                Sample == "Historic" ~ 2,
+                                TRUE ~ 3)) %>%
+  filter(is.na(Age) != TRUE) %>%
+  #filter(Sample != "Historic")%>%
+  distinct()
+
+Meansize <- Growthtable %>%
+  group_by(Age) %>%
+  reframe(Length_back_mean = mean(Length_back),
+          SDlength = sd(Length_back))
+
+Meanage <- Growthtable %>%
+  mutate(Length_back = case_when(Length_back == 0 ~ TL_mm,
+                                 TRUE ~ Length_back),
+         SK = case_when(Length_back > 100 & Length_back < 200 ~ "10 - 20 cm",
+                        Length_back > 200 & Length_back < 300 ~ "20 - 30 cm",
+                        Length_back > 300 & Length_back < 400 ~ "30 - 40 cm",
+                        Length_back > 400 & Length_back < 500 ~ "40 - 50 cm",
+                        TRUE ~ "50 cm and larger")) %>%
+  transmute(SK, Age)
+
+Add <- data.frame(SK = c("40 - 50 cm", "40 - 50 cm", "40 - 50 cm", "30 - 40 cm", "30 - 40 cm"), Age = rep(1,5))
+
+Meanage <- rbind(Meanage, Add)
+
+Ages <- ggplot(Meanage, aes(SK, fill = as.factor(Age)))+
+  geom_bar(position = "fill")+
+  scale_fill_viridis_d()+
+  theme_classic() +
+  labs(x = "Sizeclass (cm)", y = "proportion")+
+  theme(axis.text.x = element_text(size = 15, colour = "black", angle = 90),
+        axis.text.y = element_text(size = 15, colour = "black"),
+        axis.title.x = element_text(size = 15, colour = "black"),
+        axis.title.y = element_text(size = 15, colour = "black"),
+        legend.text = element_text(size = 15),
+        legend.title = element_text(size = 15, face = "bold"))
+
+#ggsave("Figures/Ages_at_sizeclass.png", height = 15, width = 15, units = "cm", bg = "white", dpi = 300)
+
+#Sample sizes
+length(Growthtable[Growthtable$Sample_bin == 1,]$Fish_ID)
+length(Growthtable[Growthtable$Sample_bin == 2,]$Fish_ID)
+
+priors <- fread("Data/Pike/Priors_pike.csv")
+
+standata_Pike1 = list(
+  Length = Growthtable$Length_back/10,
+  Age = Growthtable$Age,
+  N = nrow(Growthtable),
+  Sample = Growthtable$Sample_bin,
+  linf_mean = mean(priors$Loo), #alt: mean^2/variance & variance/mean
+  linf_var = sd(priors$Loo),
+  t0_mean = mean(priors$to),
+  t0_var = sd(priors$to)^2,
+  k_prior = 1,  
+  n_groupmax = as.integer(max(length(Growthtable[Growthtable$Sample_bin == 1,]$Fish_ID))),
+  n_areas = as.integer(max(Growthtable$Sample_bin)),
+  Area_id = Growthtable$Sample_bin
+)
+
+# Modelling
+stancode <- "Data/Pike/Stan/Simple_VBGF_TZero_historic-vs-recent-vs-freshwater.stan"
+
+mod = stan_model(stancode, model_name = "pike growth population")
+
+#fitting
+fit_1 = sampling(mod, iter = 10000, data = standata_Pike1, thin = 100,
+                   control = list(adapt_delta = 0.95, max_treedepth = 14))
+
+saveRDS(fit_1, "Data/Pike/Stan/Model-recent-vs-historic_complex.rds")
+
+p = c("LInf_area", "tZero_area", "k_area")
+
+samps = as.matrix(fit_1, pars = p)
+dat = data.frame(
+	estimate = apply(samps, 2, median),
+	lower = apply(samps, 2, quantile, 0.05),
+	upper = apply(samps, 2, quantile, 0.95)
+)
+tab = cbind(rownames(dat), as.character(signif(dat$estimate, 3)), 
+			paste0("(", signif(dat$lower, 3), ", ", signif(dat$upper, 3), ")"))
+colnames(tab) = c("Parameter", "Posterior median", "90% CI")
+
+knitr::kable(tab)
+```
+
+```{r Growth curve comparison area-specific, include=FALSE, eval=FALSE}
+rm(list = ls())
+
+Pikemaster <- fread("Data/Pike/Pikemaster.csv")
+
+Growthtable <- Pikemaster %>%
+  transmute(Fish_ID, TL_mm, Length_back, Sample, Age, Cohort, Sex, Area, Genotype)%>%
+  mutate(Area = case_when(Area %in% c("Sehrowbach", "Barthe", "Peene", "KWB", "Duwenbeek", "Beek") ~ "Tributary",
+                          Area %in% c("NRB", "BAT", "GB", "S", "SB", "U", "KB", "WB", "BEG", "BEZ", "GJB", "VB") ~ "Mesohaline",
+                          Area %in% c("P", "KJB", "SAB") ~ "Oligohaline",
+                          TRUE ~ Area),
+         Sample_bin = case_when(Sample == "Recent" & Area == "Mesohaline" ~ 1,
+                                Sample == "Recent" & Area == "Oligohaline" ~ 2,
+                                Sample == "Recent" & Area == "Tributary" ~ 3,
+                                Sample == "Historic" & Area == "Mesohaline" ~ 4,
+                                Sample == "Historic" & Area == "Oligohaline" ~ 5)) %>%
+  distinct()
+
+priors <- fread("Data/Pike/Priors_pike.csv")
+
+standata_Pike2 = list(
+  Length = Growthtable$Length_back/10,
+  Age = Growthtable$Age,
+  N = nrow(Growthtable),
+  Sample = Growthtable$Sample_bin,
+  linf_mean = mean(priors$Loo), #alt: mean^2/variance & variance/mean
+  linf_var = sd(priors$Loo),
+  t0_mean = mean(priors$to),
+  t0_var = sd(priors$to)^2,
+  k_prior = 1,  
+  n_groupmax = as.integer(max(Growthtable %>% group_by(Sample_bin) %>% transmute(sample_num = length(Fish_ID)))),
+  n_areas = as.integer(max(Growthtable$Sample_bin)),
+  Area_id = Growthtable$Sample_bin
+)
+
+# Model
+stancode <- "Data/Pike/Stan/Simple_VBGF_TZero_historic-vs-recent-vs-freshwater.stan"
+
+mod = stan_model(stancode, model_name = "pike growth population")
+
+#fitting
+fit_1 = sampling(mod, iter = 40000, data = standata_Pike2, thin = 100,
+                   control = list(adapt_delta = 0.95, max_treedepth = 14))
+
+saveRDS(fit_1, "Data/Pike/Stan/Model-recent-vs-historic_complex_area-specific.rds")
+
+print(fit_1, pars = c("LInf_area", "tZero_area", "k_area", "sigma_area" ))
+
+p = c("LInf_area", "tZero_area", "k_area")
+
+samps = as.matrix(fit_1, pars = p)
+dat = data.frame(
+	estimate = apply(samps, 2, median),
+	lower = apply(samps, 2, quantile, 0.05),
+	upper = apply(samps, 2, quantile, 0.95)
+)
+tab = cbind(rownames(dat), as.character(signif(dat$estimate, 3)), 
+			paste0("(", signif(dat$lower, 3), ", ", signif(dat$upper, 3), ")"))
+colnames(tab) = c("Parameter", "Posterior median", "90% CI")
+
+knitr::kable(tab)
+```
+
+```{r Growth curve comparison genotypes, include=FALSE, eval=FALSE}
+rm(list = ls())
+
+Pikemaster <- fread("Data/Pike/Pikemaster.csv")
+
+Growthtable <- Pikemaster %>%
+  filter(Sample == "Historic")%>%
+  transmute(Fish_ID, TL_mm, Length_back, Sample, Age, Cohort, Sex, Area, Genotype)%>%
+  mutate(Area = case_when(Area %in% c("Sehrowbach", "Barthe", "Peene", "KWB", "Duwenbeek", "Beek") ~ "Tributary",
+                          Area %in% c("NRB", "BAT", "GB", "S", "SB", "U", "KB", "WB", "BEG", "BEZ", "GJB", "VB") ~ "Mesohaline",
+                          Area %in% c("P", "KJB", "SAB") ~ "Oligohaline",
+                          TRUE ~ Area),
+         Sample_bin = case_when(Sample == "Recent" & Area == "Mesohaline" ~ 1,
+                                Sample == "Recent" & Area == "Oligohaline" ~ 2,
+                                Sample == "Recent" & Area == "Tributary" ~ 3,
+                                Sample == "Historic" & Area == "Mesohaline" ~ 4,
+                                Sample == "Historic" & Area == "Oligohaline" ~ 5)) %>%
+  distinct()%>%
+  drop_na(Genotype)%>%
+  filter(Genotype != 0)
+
+priors <- fread("Data/Pike/Priors_pike.csv")
+
+table(Growthtable$Genotype)
+
+standata_Pike3 = list(
+  Length = Growthtable$Length_back/10,
+  Age = Growthtable$Age,
+  N = nrow(Growthtable),
+  Sample = Growthtable$Genotype,
+  linf_mean = mean(priors$Loo), #alt: mean^2/variance & variance/mean
+  linf_var = sd(priors$Loo),
+  t0_mean = mean(priors$to),
+  t0_var = sd(priors$to)^2,
+  k_prior = 1,  
+  n_groupmax = as.integer(max(Growthtable %>% group_by(Genotype) %>% transmute(sample_num = length(Fish_ID)))),
+  n_geno = as.integer(max(Growthtable$Genotype)),
+  geno_id = Growthtable$Genotype
+)
+
+# Model
+stancode <- "Data/Pike/Stan/Simple_VBGF_TZero_historic-genotypes.stan"
+
+mod = stan_model(stancode, model_name = "pike growth population")
+
+#fitting
+fit_3 = sampling(mod, iter = 40000, data = standata_Pike3, thin = 100,
+                   control = list(adapt_delta = 0.95, max_treedepth = 14))
+
+saveRDS(fit_3, "Data/Pike/Stan/Model_historic-genotypes.rds")
+
+print(fit_3, pars = c("LInf_geno", "tZero_geno", "k_geno", "sigma_geno"))
+
+p = c("LInf_geno", "tZero_geno", "k_geno")
+
+samps = as.matrix(fit_3, pars = p)
+dat = data.frame(
+	estimate = apply(samps, 2, median),
+	lower = apply(samps, 2, quantile, 0.05),
+	upper = apply(samps, 2, quantile, 0.95)
+)
+tab = cbind(rownames(dat), as.character(signif(dat$estimate, 3)), 
+			paste0("(", signif(dat$lower, 3), ", ", signif(dat$upper, 3), ")"))
+colnames(tab) = c("Parameter", "Posterior median", "90% CI")
+
+knitr::kable(tab)
+
+Growthtable2 <- Pikemaster %>%
+  filter(Sample == "Recent")%>%
+  transmute(Fish_ID, TL_mm, Length_back, Sample, Age, Cohort, Sex, Area, Genotype)%>%
+  mutate(Area = case_when(Area %in% c("Sehrowbach", "Barthe", "Peene", "KWB", "Duwenbeek", "Beek") ~ "Tributary",
+                          Area %in% c("NRB", "BAT", "GB", "S", "SB", "U", "KB", "WB", "BEG", "BEZ", "GJB", "VB") ~ "Mesohaline",
+                          Area %in% c("P", "KJB", "SAB") ~ "Oligohaline",
+                          TRUE ~ Area),
+         Sample_bin = case_when(Sample == "Recent" & Area == "Mesohaline" ~ 1,
+                                Sample == "Recent" & Area == "Oligohaline" ~ 2,
+                                Sample == "Recent" & Area == "Tributary" ~ 3,
+                                Sample == "Historic" & Area == "Mesohaline" ~ 4,
+                                Sample == "Historic" & Area == "Oligohaline" ~ 5)) %>%
+  distinct()%>%
+  drop_na(Genotype)%>%
+  filter(Genotype != 0)
+
+table(Growthtable2$Genotype)
+
+standata_Pike4 = list(
+  Length = Growthtable2$Length_back/10,
+  Age = Growthtable2$Age,
+  N = nrow(Growthtable2),
+  Sample = Growthtable2$Genotype,
+  linf_mean = mean(priors$Loo), #alt: mean^2/variance & variance/mean
+  linf_var = sd(priors$Loo),
+  t0_mean = mean(priors$to),
+  t0_var = sd(priors$to)^2,
+  k_prior = 1,  
+  n_groupmax = as.integer(max(Growthtable2 %>% group_by(Genotype) %>% transmute(sample_num = length(Fish_ID)))),
+  n_geno = as.integer(max(Growthtable2$Genotype)),
+  geno_id = Growthtable2$Genotype
+)
+
+# Model
+stancode <- "Data/Pike/Stan/Simple_VBGF_TZero_historic-genotypes.stan"
+
+mod = stan_model(stancode, model_name = "pike growth population")
+
+#fitting, run again as you f´d up
+fit_4 = sampling(mod, iter = 40000, data = standata_Pike4, thin = 100,
+                   control = list(adapt_delta = 0.95, max_treedepth = 14))
+
+saveRDS(fit_4, "Data/Pike/Stan/Model_recent-genotypes.rds")
+
+print(fit_4, pars = c("LInf_geno", "tZero_geno", "k_geno", "sigma_geno"))
+
+p = c("LInf_geno", "tZero_geno", "k_geno")
+
+samps = as.matrix(fit_4, pars = p)
+dat = data.frame(
+	estimate = apply(samps, 2, median),
+	lower = apply(samps, 2, quantile, 0.05),
+	upper = apply(samps, 2, quantile, 0.95)
+)
+tab = cbind(rownames(dat), as.character(signif(dat$estimate, 3)), 
+			paste0("(", signif(dat$lower, 3), ", ", signif(dat$upper, 3), ")"))
+colnames(tab) = c("Parameter", "Posterior median", "90% CI")
+
+knitr::kable(tab)
+```
+
+```{r Growth curve plots population and area, include=FALSE, eval=FALSE}
+rm(list = ls())
+
+Pikemaster <- fread("Data/Pike/Pikemaster.csv")
+fit_1 <- read_rds("Data/Pike/Stan/Model-recent-vs-historic_complex.rds")
+fit_2 <- read_rds("Data/Pike/Stan/Model-recent-vs-historic_complex_area-specific.rds")
+
+Growthtable1 <- Pikemaster %>%
+  transmute(Fish_ID, TL_mm, Length_back, Sample, Age, Cohort, Sex, Area, Genotype)%>%
+  mutate(Sample = case_when(Area %in% c("Sehrowbach", "Barthe", "Peene", "KWB", "Duwenbeek", "Beek") ~ "Freshwater",
+                            TRUE ~ Sample),
+         Sample_bin = as.factor(case_when(Sample == "Recent" ~ 1,
+                                Sample == "Historic" ~ 2,
+                                TRUE ~ 3))) %>%
+  distinct()
+
+Growthtable2 <- Pikemaster %>%
+  transmute(Fish_ID, TL_mm, Length_back, Sample, Age, Cohort, Sex, Area, Genotype)%>%
+  mutate(Area = case_when(Area %in% c("Sehrowbach", "Barthe", "Peene", "KWB", "Duwenbeek", "Beek") ~ "Tributary",
+                          Area %in% c("NRB", "BAT", "GB", "S", "SB", "U", "KB", "WB", "BEG", "BEZ", "GJB", "VB") ~ "Mesohaline",
+                          Area %in% c("P", "KJB", "SAB") ~ "Oligohaline",
+                          TRUE ~ Area),
+         Sample_bin = as.factor(case_when(Sample == "Recent" & Area == "Mesohaline" ~ 1,
+                                Sample == "Recent" & Area == "Oligohaline" ~ 2,
+                                Sample == "Recent" & Area == "Tributary" ~ 3,
+                                Sample == "Historic" & Area == "Mesohaline" ~ 4,
+                                Sample == "Historic" & Area == "Oligohaline" ~ 5))) %>%
+  distinct()
+
+#extract samples
+
+Incpredict = function(pars, Agei) pars[1] * (1 - exp(-pars[2] * (Agei - (-pars[3]))))
+
+Pikepredict = function(x, quants = c(0.5, 0.05, 0.95), names = c("median", "lower", "upper")) {
+	pars = c("LInf_area", "k_area", "tZero_area")
+	samps = as.matrix(x, pars = pars)
+
+	# list of 4 phenotypes
+	# each element is a matrix, 20000 rows (samples) by 15 age increments
+	area_pr = lapply(0:2, \(i) t(apply(samps[, c(1, 4, 7) + i], 1, Incpredict, Agei = 1:15)))
+
+	# convert to a data table summarizing by quantiles
+	area_q = lapply(area_pr, \(x) {
+		res = data.frame(t(apply(x, 2, quantile, quants)))
+		colnames(res) = names
+		res$Agei = 1:15
+		res
+	})
+	rbindlist(area_q, idcol = "area_id")
+}
+
+samples <- Pikepredict(fit_1)
+samples$area_id <- as.factor(samples$area_id)
+
+pl_theme =	theme_classic() +
+  theme(panel.grid.major = element_line(),
+        legend.box.background = element_rect(),
+        axis.line = element_line(linewidth = .5, colour = "black", linetype = 1),
+        axis.ticks = element_line(linewidth = .5, colour = "black"),
+        axis.text.x = element_text(size = 14, colour = "black"),
+        axis.text.y = element_text(size = 14, colour = "black"),
+        axis.title.x = element_text(size = 14, colour = "black"),
+        axis.title.y = element_text(size = 14, colour = "black"),
+        legend.text = element_text(size = 14),
+        legend.title = element_text(size = 14, face = "bold"),
+        legend.position = c(0.8,0.2),
+        plot.title = element_text(size = 14, colour = "black"))
+
+Curve_simple <- ggplot(data = samples) + 
+  geom_ribbon(aes(x = Agei, ymin = lower, ymax = upper, fill = area_id), alpha = 0.5) +
+  geom_line(aes(x = Agei, y = median, color = area_id), linewidth = 2) + 
+  geom_point(data = Growthtable1, aes(x = Age, y = Length_back/10, color = Sample_bin), size = 1, alpha = .9) + 
+  scale_x_continuous(breaks = seq(1,15,1), labels = c("1","","3","","5","","7","","9","","11","","13","","15"))+
+  scale_color_manual(breaks = c(1,2,3), values = c("#004643", "#F1C40F", "#00BFB2"), labels = c("Recent", "Historic", "Tributary"))+
+  scale_fill_manual(breaks = c(1,2,3), values = c("#004643", "#F1C40F", "#00BFB2"), labels = c("Recent", "Historic", "Tributary"))+
+  labs(x="Age (years)", y="Total length (cm)", color = "Sample", fill = "Sample") + pl_theme
+
+ggsave("Figures/VB-curve_recent-vs-historic-vs-fresh.png", Curve_simple, width = 15, height = 15, units = "cm", dpi = 600, bg = "white")
+
+Pikepredict2 = function(x, quants = c(0.5, 0.05, 0.95), names = c("median", "lower", "upper")) {
+	pars = c("LInf_area", "k_area", "tZero_area")
+	samps = as.matrix(x, pars = pars)
+
+	# list of 4 phenotypes
+	# each element is a matrix, 20000 rows (samples) by 15 age increments
+	area_pr = lapply(0:4, \(i) t(apply(samps[, c(1, 6, 11) + i], 1, Incpredict, Agei = 1:15)))
+
+	# convert to a data table summarizing by quantiles
+	area_q = lapply(area_pr, \(x) {
+		res = data.frame(t(apply(x, 2, quantile, quants)))
+		colnames(res) = names
+		res$Agei = 1:15
+		res
+	})
+	rbindlist(area_q, idcol = "area_id")
+}
+
+samples2 <- Pikepredict2(fit_2)
+samples2$area_id <- as.factor(samples2$area_id)
+
+Curve_complex <- ggplot(data = samples2) + 
+  geom_ribbon(aes(x = Agei, ymin = lower, ymax = upper, fill = area_id), alpha = 0.5) +
+  geom_line(aes(x = Agei, y = median, color = area_id), linewidth = 2) + 
+  geom_point(data = Growthtable2, aes(x = Age, y = Length_back/10, color = Sample_bin), size = 1, alpha = .9) + 
+  scale_x_continuous(breaks = seq(1,15,1), labels = c("1","","3","","5","","7","","9","","11","","13","","15"))+
+  scale_color_manual(breaks = c(1,2,3,4,5), values = c("#004643", "#C5D86D", "#00BFB2", "#F1C40F", "#AF3800"), 
+                     labels = c("Recent mesohaline", "Recent oligohaline", "Tributary", "Historic mesohaline", "historic oligohaline"))+
+  scale_fill_manual(breaks = c(1,2,3,4,5), values = c("#004643", "#C5D86D", "#00BFB2", "#F1C40F", "#AF3800"), 
+                     labels = c("Recent mesohaline", "Recent oligohaline", "Tributary", "Historic mesohaline", "historic oligohaline"))+
+  labs(x="Age (years)", y="Total length (cm)", color = "Sample", fill = "Sample") + pl_theme
+
+ggsave("Figures/VB-curve_recent-vs-historic-vs-fresh_areas.png", Curve_complex,
+       width = 15, height = 15, units = "cm", dpi = 600, bg = "white")
+```
+
+```{r Growth curve plots genotypes, include=FALSE, eval=FALSE}
+rm(list = ls())
+
+Pikemaster <- fread("Data/Pike/Pikemaster.csv")
+fit_1 <- read_rds("Data/Pike/Stan/Model_historic-genotypes.rds")
+fit_2 <- read_rds("Data/Pike/Stan/Model_recent-genotypes.rds")
+
+Growthtable1 <- Pikemaster %>%
+  filter(Sample == "Historic") %>%
+  transmute(Fish_ID, TL_mm, Length_back, Sample, Age, Cohort, Sex, Area, Genotype)%>%
+  mutate(Genotype = as.factor(Genotype)) %>%
+  filter(Genotype != 0) %>%
+  distinct()
+
+Growthtable2 <- Pikemaster %>%
+  filter(Sample == "Recent") %>%
+  transmute(Fish_ID, TL_mm, Length_back, Sample, Age, Cohort, Sex, Area, Genotype)%>%
+  mutate(Genotype = as.factor(Genotype)) %>%
+  filter(Genotype != 0) %>%
+  distinct()
+
+#extract samples
+
+Incpredict = function(pars, Agei) pars[1] * (1 - exp(-pars[2] * (Agei - (-pars[3]))))
+
+Pikepredict = function(x, quants = c(0.5, 0.1, 0.9), names = c("median", "lower", "upper")) {
+	pars = c("LInf_geno", "k_geno", "tZero_geno")
+	samps = as.matrix(x, pars = pars)
+
+	# list of 4 phenotypes
+	# each element is a matrix, 20000 rows (samples) by 15 age increments
+	geno_pr = lapply(0:4, \(i) t(apply(samps[, c(1, 6, 11) + i], 1, Incpredict, Agei = 1:15)))
+
+	# convert to a data table summarizing by quantiles
+	geno_q = lapply(geno_pr, \(x) {
+		res = data.frame(t(apply(x, 2, quantile, quants)))
+		colnames(res) = names
+		res$Agei = 1:15
+		res
+	})
+	rbindlist(geno_q, idcol = "geno_id")
+}
+
+samples <- Pikepredict(fit_1)
+samples$geno_id <- as.factor(samples$geno_id)
+
+pl_theme =	theme_classic() +
+  theme(panel.grid.major = element_line(),
+        legend.box.background = element_rect(),
+        axis.line = element_line(linewidth = .5, colour = "black", linetype = 1),
+        axis.ticks = element_line(linewidth = .5, colour = "black"),
+        axis.text.x = element_text(size = 14, colour = "black"),
+        axis.text.y = element_text(size = 14, colour = "black"),
+        axis.title.x = element_text(size = 14, colour = "black"),
+        axis.title.y = element_text(size = 14, colour = "black"),
+        legend.text = element_text(size = 14),
+        legend.title = element_text(size = 14, face = "bold"),
+        legend.position = c(0.8,0.2),
+        plot.title = element_text(size = 14, colour = "black"))
+
+#Genotypes: 1 = brackish 1; 2 = brackish 2; 3 = freshwater/anadromous; 4 = brackish 3; 5 = freshwater
+
+Historic <- ggplot(data = samples) + 
+  geom_ribbon(aes(x = Agei, ymin = lower, ymax = upper, fill = geno_id), alpha = 0.3) +
+  geom_line(aes(x = Agei, y = median, color = geno_id), linewidth = 1) + 
+  geom_point(data = Growthtable1, aes(x = Age, y = Length_back/10, color = Genotype), size = 1, alpha = .9) + 
+  scale_x_continuous(breaks = seq(1,15,1), labels = c("1","","3","","5","","7","","9","","11","","13","","15"))+
+  scale_color_manual(breaks = c(1,2,3,4,5), values = c("#004643", "#C5D86D", "#00BFB2", "#F1C40F", "#AF3800"), 
+                     labels = c("Brackish 1", "Brackish 2", "anadromous", "Brackish 3", "Freshwater"))+
+  scale_fill_manual(breaks = c(1,2,3,4,5), values = c("#004643", "#C5D86D", "#00BFB2", "#F1C40F", "#AF3800"), 
+                     labels = c("Brackish 1", "Brackish 2", "anadromous", "Brackish 3", "Freshwater"))+
+  labs(x="Age (years)", y="Total length (cm)", color = "Sample", fill = "Sample") + pl_theme
+
+samples2 <- Pikepredict(fit_2)
+samples2$geno_id <- as.factor(samples2$geno_id)
+
+Recent <- ggplot(data = samples2) + 
+  geom_ribbon(aes(x = Agei, ymin = lower, ymax = upper, fill = geno_id), alpha = 0.3) +
+  geom_line(aes(x = Agei, y = median, color = geno_id), linewidth = 1) + 
+  geom_point(data = Growthtable2, aes(x = Age, y = Length_back/10, color = Genotype), size = 1, alpha = .9) + 
+  scale_x_continuous(breaks = seq(1,15,1), labels = c("1","","3","","5","","7","","9","","11","","13","","15"))+
+  scale_color_manual(breaks = c(1,2,3,4,5), values = c("#004643", "#C5D86D", "#00BFB2", "#F1C40F", "#AF3800"), 
+                     labels = c("Brackish 1", "Brackish 2", "anadromous", "Brackish 3", "Freshwater"))+
+  scale_fill_manual(breaks = c(1,2,3,4,5), values = c("#004643", "#C5D86D", "#00BFB2", "#F1C40F", "#AF3800"), 
+                     labels = c("Brackish 1", "Brackish 2", "anadromous", "Brackish 3", "Freshwater"))+
+  labs(x="Age (years)", y="Total length (cm)", color = "Sample", fill = "Sample") + pl_theme
+
+Recent_vs_historic <- ggarrange(Recent, Historic)
+
+ggsave("Figures/VB-curve_recent-vs-historic-genotypes.png", Recent_vs_historic,
+       width = 30, height = 15, units = "cm", dpi = 600, bg = "white")
+
+print(fit_1, pars = c("LInf_geno", "tZero_geno", "k_geno", "sigma_geno"))
+print(fit_2, pars = c("LInf_geno", "tZero_geno", "k_geno", "sigma_geno"))
 ```
 
 
-```{r data exploration, include=FALSE, eval=FALSE}
+# Isotope analysis
+
+```{r stratified sampling, include=FALSE, eval=FALSE}
+rm(list = ls())
+
+Pikemaster <- fread("Data/Pike/Historic_pike_master.csv")
+
+Pikemaster2 <- Pikemaster%>%
+  mutate(Size_class = cut(Total_Length_mm, breaks = seq(0, 125, by = 25)))
+
+Sample <- Pikemaster2%>%
+  group_by(Waterbody, Size_class, Genotype)%>%
+  sample_n(5, replace = TRUE)%>%
+  ungroup()%>%
+  distinct()
+
+fwrite(Sample, "Data/Pike/Historic_pike_SI-sample.csv")
+```
+
+```{r join age readings with isotope data, include=FALSE, eval=FALSE}
 #Create overview list of pike for which SI data and scale readings exist to identify fish that need SI reading
 #Script uses already processed data, will change when data is run through final data check of MS 3
 
 rm(list = ls())
+
+Pikemaster <- fread("Data/Pike/Pikemaster.csv")
 #Complete isotope dataset
-Isopike <- fread("Data/whole-sample-muscle-SI.csv")
-#Scale data for transmitter pike
-Pikescales <- fread("Data/Transmitter-pike-ages-with-TL.csv")
-#Otolith age data
-Pikeoto <- fread("Data/Otolith-ages-TL.csv")
-#Database
-Pike1 <- fread("C:/Users/timor/Nextcloud2/Boddenhecht/Data/Pike Data/1.pike_data_base_FOR_USERS/1Pike_Latest_Version.txt")
+Isopike <- fread("Data/Pike/Pike_SI_all_clean_average_lipid-corrected.csv")
+Isopike$Fish_ID <- Isopike$ID
+
 
 #Filter for pike with complete isotope measurements
-# Identify duplicates and check (mostly due to differences in comment --> not caught by distinct() before)
-duplicates <- Isopike2[duplicated(fish_ID) | duplicated(fish_ID, fromLast = TRUE), .SD, by = .(fish_ID)]
-
 Isopike2 <- Isopike%>%
-  mutate(CNS_complete = case_when(is.na(d13C) == TRUE | is.na(d15N) == TRUE | is.na(d34S) == TRUE ~ 0,
-                                  TRUE ~ 1))%>%
-  filter(CNS_complete == 1)%>%
-  transmute(fish_ID = ID,
-            CNS_complete)%>%
+  transmute(Fish_ID = Fish_ID,
+            d15N_muscle = d15N,
+            d13C_muscle = d13C,
+            d34S_muscle = d34S) %>%
   distinct()
 
-#All there?
-length(unique(Isopike$ID))==length(unique(Isopike2$fish_ID))
+Pikemaster2 <- Pikemaster %>%
+  left_join(Isopike2, by = "Fish_ID")
 
-#Get age reading pike
-Pikeoto2 <- Pikeoto%>%
-  transmute(fish_ID = ID,
-            age,
-            comment = "oto")%>%
+#join genotypes
+#Load STRUCTURE output file
+geneticsdata <- read.delim("Data/Pike/struct_K5_1_f_GTinfo_historic.txt", sep = "", dec = ".", header = F, stringsAsFactors = F)
+
+substrRight <- function(x, n){
+  substr(x, nchar(x)-n+1, nchar(x))
+}
+
+#prefilter
+geneticsdata2 <- geneticsdata%>%
+  filter(str_detect(V1, "BH"))
+
+#Genotypes: 1 = brackish 1; 2 = brackish 2; 3 = freshwater/anadromous; 4 = brackish 3; 5 = freshwater
+Genotypes <- geneticsdata2%>%
+  transmute(ID=paste0(sub("_","-",substrRight(V1,8))),
+            cluster1 = as.numeric(V2),
+            cluster2 = as.numeric(V3),
+            cluster3 = as.numeric(V4),
+            cluster4 = as.numeric(V5),
+            cluster5 = as.numeric(V6))%>%
+  drop_na()
+
+
+Genotypes$clust <- apply(Genotypes[,c(2,3,4,5,6)], 1, FUN = which.max)
+Genotypes$clustval <- apply(Genotypes[,c(2,3,4,5,6)], 1, FUN = max)
+
+Genotypes2 <- Genotypes%>%
+  mutate(Genotype = case_when(clustval < 0.5 ~ "0",
+                            TRUE~as.character(clust)))
+
+Genotypes3 <- Genotypes2%>%
+  transmute(Fish_ID = ID, Genotype = Genotype)
+
+Isopike3 <- Isopike %>%
+  left_join(Genotypes3, by = "Fish_ID")
+
+Isoadd <- Isopike3 %>%
+  filter(!Fish_ID %in% c(Pikemaster$Fish_ID))%>%
+  transmute(Fish_ID, TL_mm,
+            Sample = "Recent",
+            Age = NA,
+            Cohort = NA,
+            Weight = weight_g,
+            Sex = sex,
+            Area = area,
+            Capt_date = capt_date,
+            Lifeyear = NA,
+            Year = NA,
+            Increment_mm = NA,
+            Radius_mm = NA,
+            Scale_width_mm = NA,
+            Pisc_mm = NA,
+            Scale = NA,
+            Imaging = NA,
+            Oldenburg_ID = NA,
+            Genotype,
+            Length_back = NA,
+            d15N_muscle = d15N,
+            d13C_muscle = d13C,
+            d34S_muscle = d34S)
+
+Pikemaster3 <- rbind(Pikemaster2, Isoadd)
+
+#Join scale isotopes
+Isoall <- fread("Data/Pike/2024-06-21_NCS_TRittweg_Results.CSV")
+
+Isoscales <- Isoall %>%
+  filter(Identifier_1 == "scale")%>%
+  transmute(Fish_ID = case_when(startsWith(Identifier_2, "BH") ~ paste0(substr(Identifier_2, 1,2), "-", substr(Identifier_2, 3,7)),
+                             TRUE ~ Identifier_2),
+            d13C_scale = as.numeric(`d13C/12C_Calculated`),
+            d15N_scale = as.numeric(`d15N/14N_Calculated`),
+            d34S_scale = as.numeric(`d34S/32S_Calculated`),
+            CN_ratio = as.numeric(Cperc)/as.numeric(Nperc))
+
+#join with other scale isotopes
+
+Scales0 <- fread("Data/Pike/2024-01-25_NCS_Pike-scales.CSV")
+Scales1 <- Scales0 %>%
+  transmute(Fish_ID = paste0(substr(V3, 1,2), "-", substr(V3, 3,7)),
+            d13C_scale = as.numeric(V7),
+            d15N_scale = as.numeric(V5),
+            d34S_scale = as.numeric(V9),
+            CN_ratio = as.numeric(V8)/as.numeric(V6))
+
+Isoscales2 <- rbind(Isoscales, Scales1)
+
+ggplot(data = Isoscales2, aes(CN_ratio, d13C_scale))+
+  geom_smooth(method = "lm")+
+  geom_point()+
+  theme_bw()
+
+Isoscales3 <- Isoscales2 %>%
+  group_by(Fish_ID) %>%
+  reframe(Fish_ID,
+                   d13C_scale = mean(d13C_scale),
+                   d15N_scale = mean(d15N_scale),
+                   d34S_scale = mean(d34S_scale)) %>%
+  ungroup() %>%
   distinct()
 
-Pikescales2 <- Pikescales%>%
-  transmute(fish_ID,
-            age,
-            comment = "trans")%>%
+#Join with pikemaster
+Pikemaster4 <- Pikemaster3 %>%
+  left_join(Isoscales3, by = "Fish_ID")%>%
   distinct()
 
-Pikeage <- rbind(Pikeoto2, Pikescales2)
-
-#Join with Isotope data, filter fish for which no age reading is there yet
-Pikeisoage <- Isopike2%>%
-  left_join(Pikeage, by = "fish_ID")%>%
-  filter(is.na(age) == TRUE)
-
-#Identify whether those are transmitter fish
-Pike2 <- Pike1%>%
-  transmute(fish_ID=Fish_ID,
-            waterbody=Waterbody,
-            sex=Sex,
-            date=Date,
-            weight=Weight,
-            TL_mm=Total_Length_mm,
-            Recap=MarkorRecap,
-            Tele=case_when(is.na(Transmitter_Num)==FALSE~"Yes",
-                           TRUE~"NA"))%>%
-  filter(Tele == "Yes" & Recap == "Mark")%>%
+#Check mising fish
+Isoscales_check <- Isoscales3 %>%
+  filter(startsWith(Fish_ID, "BH-80")) %>%
   distinct()
 
-Pike3 <- Pike2%>%
-  transmute(fish_ID,
-            Tele)%>%
-  distinct()
-  
-Missingpike <- Pikeisoage%>%
-  left_join(Pike3, by = "fish_ID")
+Pikecheck <- Pikemaster2 %>%
+  filter(startsWith(Fish_ID, "BH-80"))%>%
+  transmute(Fish_ID,
+            Fish_ID2 = Fish_ID)
 
-#Check how many transmitter fish are without age
-length(Missingpike[Missingpike$Tele == "Yes",]$fish_ID)
+Isocheck <- Isoscales_check %>%
+  left_join(Pikecheck, by = "Fish_ID") %>%
+  distinct() %>%
+  filter(is.na(Fish_ID2) == TRUE)
+
+#Adjoin missing fish
+Histopike <- fread("Data/Pike/Historic_pike_master.csv")
+
+Histo_iso_add <- Histopike %>%
+  left_join(Isocheck, by = "Fish_ID")%>%
+  drop_na(d34S_scale)%>%
+  transmute(Fish_ID, 
+            TL_mm = Total_Length_mm,
+            Sample = "Historic",
+            Capt_date = Date,
+            Sex,
+            Area = Waterbody,
+            Weight, Genotype, d13C_scale, d15N_scale, d34S_scale)
+
+Pikemaster5 <- plyr::rbind.fill(Pikemaster4, Histo_iso_add)
+
+#fwrite(Pikemaster5, "Data/Pike/Pikemaster.csv")
+```
+
+```{r correction factor pike, include=FALSE, eval=FALSE}
+rm(list = ls())
+
+Pikemaster <- fread("Data/Pike/Pikemaster.csv")
+
+Pikemaster2 <- Pikemaster %>%
+  filter(is.na(d13C_muscle) != TRUE & is.na(d13C_scale) != TRUE)%>%
+  transmute(Fish_ID, TL_mm, Sample, Age, Cohort, Weight, Sex, Area, Capt_date, d13C_muscle, d15N_muscle, d34S_muscle, d13C_scale,
+            d15N_scale, d34S_scale)%>%
+  distinct()
+
+#plot
+t.test(Pikemaster2$d13C_muscle, Pikemaster2$d13C_scale, paired = TRUE)
+summary(lm(d13C_muscle~d13C_scale, data = Pikemaster2))
+
+ggplot(Pikemaster2, aes(d13C_scale, d13C_muscle))+
+  geom_point()+
+  geom_smooth(method = "lm")+
+  theme_minimal()
+
+png(filename = "Figures/Pike-iso-conversion_d13C.png", width = 5000, height = 2500, res = 600)
+plot(d13C_muscle~d13C_scale, data = Pikemaster2)
+abline(-5.46, 0.84)
+dev.off()
+
+t.test(Pikemaster2$d15N_muscle, Pikemaster2$d15N_scale, paired = TRUE)
+summary(lm(d15N_muscle~d15N_scale, data = Pikemaster2))
+
+ggplot(Pikemaster2, aes(d15N_scale, d15N_muscle))+
+  geom_point()+
+  geom_smooth(method = "lm")+
+  theme_minimal()
+
+
+png(filename = "Figures/Pike-iso-conversion_d15N.png", width = 5000, height = 2500, res = 600)
+plot(d15N_muscle~d15N_scale, data = Pikemaster2)
+abline(5.15, 0.65)
+dev.off()
+
+t.test(Pikemaster2$d34S_muscle, Pikemaster2$d34S_scale, paired = TRUE)
+#Not different, so no correction needed
+
+Pikemaster3 <- Pikemaster %>%
+  mutate(d13C_scale_cor = d13C_scale-3.2,
+         d15N_scale_cor = d15N_scale-0.5,
+         d34S_scale_cor = d34S_scale)
+```
+
+```{r prey fish scale data, include=FALSE, eval=FALSE}
+rm(list = ls())
+
+Isoall <- fread("Data/Pike/2024-06-21_NCS_TRittweg_Results.CSV")
+Prey_recent <- fread("Data/Prey/Preyfish_SI_clean_average_lipid-corrected.csv")
+Prey_historic <- fread("Data/Prey/Preyfish_samples_historic.CSV")
+
+Prey_historic2 <- Prey_historic %>%
+  transmute(Fish_ID = Number,
+            Species = paste0(Species, "_historic"), 
+            SL_mm = `Length [mm]`,
+            weight_g = `Weight [g]`,
+            height_mm = `Heigth [mm]`,
+            sample_type = `Sample type`,
+            area = Waterbody,
+            capt_date = Date,
+            Long, Lat)
+
+Isoscales <- Isoall %>%
+  filter(Identifier_1 == "scale" & !startsWith(Identifier_2, "BH"))%>%
+  reframe(Fish_ID = case_when(startsWith(Identifier_2, "BH") ~ paste0(substr(Identifier_2, 1,2), "-", substr(Identifier_2, 3,7)),
+                             TRUE ~ Identifier_2),
+            d13C = as.numeric(`d13C/12C_Calculated`-3.2),
+            d15N = as.numeric(`d15N/14N_Calculated`-0.5),
+            d34S = as.numeric(`d34S/32S_Calculated`),
+            CN_ratio = as.numeric(Cperc)/as.numeric(Nperc))
+
+#Join isotope data and correct for scale offset
+Prey_historic3 <- Prey_historic2 %>%
+  left_join(Isoscales, by = "Fish_ID")%>%
+  group_by(Fish_ID) %>%
+  reframe(ID = Fish_ID,
+          Species, SL_mm, weight_g, height_mm, sample_type, area, capt_date, Long, Lat,
+          d13C = mean(d13C)-3.2,
+          d15N = mean(d15N)-0.5,
+          d34S = mean(d34S),
+          CN_ratio,
+          comment1 = NA,
+          comment2 = NA,
+          SL_size_class = NA) %>%
+  select(!Fish_ID) %>%
+  distinct()
+
+Prey_all <- rbind(Prey_recent, Prey_historic3)
+
+fwrite(Prey_all, "Data/Prey/Prey-data-all.csv")
+
+#Plot data
+m_by_sp<-aggregate(cbind(d15N, d13C, d34S)~Species, data=Prey_all, FUN=mean)
+
+sd_by_sp<-aggregate(cbind(d15N, d13C, d34S)~Species, data=Prey_all, FUN=sd)
+
+length_by_sp<-aggregate(cbind(d15N)~Species, data=Prey_all, FUN=length)
+
+descriptive<-cbind(m_by_sp, sd_by_sp, length_by_sp)
+descriptive<-descriptive[c(-5,-9)]
+colnames(descriptive)<-c("Sp", "d15N", "d13C", "d34S", "sdd15N", "sdd13C", "sdd34S","n")
+
+descriptive2 <- descriptive %>%
+  filter(Sp %in% c("C.harengus", "C. harengus_historic", "P.fluviatilis", "P.fluviatilis_historic", "R.rutilus", "R. rutilus_historic"))
+
+brewer.pal(n = 14, name = "Dark2")
+colorBlindBlack8  <- c("#1B9E77", "#D95F02", "#7570B3", "#E7298A", "#66A61E", "#E6AB02", "#A6761D", "#666666","darkblue","darkred","cyan","red","darkgreen", "orange","blue")
+
+Binorm <- ggplot()+ 
+  geom_errorbar(data=descriptive2, aes(x = d13C, ymin = d15N-sdd15N,ymax = d15N+sdd15N, col=Sp), width=.5, linewidth=.5) +
+  geom_errorbarh(data=descriptive2, aes(y = d15N, xmin = d13C+sdd13C,xmax = d13C-sdd13C, col=Sp), height=.5, linewidth=.5)+
+  scale_colour_manual("", values=colorBlindBlack8)+ #1:nlevels(sources$prey))+
+  scale_fill_manual("", values=colorBlindBlack8)+
+  xlim(-30,-12)+ylim(8,18)+
+  theme_bw()+xlab(delta^"13"~"C(\u2030)")+ylab(delta^"15"~"N(\u2030)")+
+  theme(text = element_text(size = 10, color = "black"),
+        legend.position="bottom",
+        legend.text = element_text(color = "black", size=5, face="italic"),
+        legend.key.size = unit(.5, 'cm'),
+        strip.background = element_rect(colour="black", fill="white"))
+
+BiNS <- ggplot()+ geom_errorbar(data=descriptive2, aes(x=d34S, y=d15N, ymin = d15N-sdd15N,ymax = d15N+sdd15N, col=Sp),
+                        width=.5, size=.5) + 
+  geom_errorbarh(data=descriptive2, aes(x=d34S, y=d15N, xmin = d34S+sdd34S,xmax = d34S-sdd34S, col=Sp),
+                 height=.5, size=.5)+
+  scale_colour_manual("", values=colorBlindBlack8)+ #1:nlevels(sources$prey))+
+  scale_fill_manual("", values=1:nlevels(descriptive2$sp))+
+  xlim(5,22)+ylim(8,18)+
+  theme_bw()+xlab(delta^"34"~"S(\u2030)")+ylab(delta^"15"~"N(\u2030)")+
+  theme(text = element_text(size = 10, color = "black"),
+        legend.position="none",
+        legend.text = element_text(color = "black", size=5, face="italic"),
+        legend.key.size = unit(.5, 'cm'),
+        strip.background = element_rect(colour="black", fill="white"))
+
+BiCS <- ggplot()+ geom_errorbar(data=descriptive2, aes(x=d13C, y=d34S, ymin = d34S+sdd34S,ymax = d34S-sdd34S, col=Sp),
+                        width=.5, size=.5) + 
+  geom_errorbarh(data=descriptive2, aes(x=d13C, y=d34S, xmin = d13C+sdd13C,xmax = d13C-sdd13C, col=Sp),
+                 height=.5, size=.5)+
+  scale_colour_manual("", values=colorBlindBlack8)+ #1:nlevels(sources$prey))+
+  scale_fill_manual("", values=1:nlevels(descriptive2$sp))+
+  xlim(-30,-12)+ylim(5,22)+
+  theme_bw()+xlab(delta^"13"~"C(\u2030)")+ylab(delta^"34"~"S(\u2030)")+
+  theme(text = element_text(size = 10, color = "black"),
+        legend.position="none",
+        legend.text = element_text(color = "black", size=5, face="italic"),
+        legend.key.size = unit(.5, 'cm'),
+        strip.background = element_rect(colour="black", fill="white"))
+
+Allplot <- ggarrange(Binorm, BiNS, BiCS, ncol = 3, nrow = 1, common.legend = T, labels = c("A", "B", "C"))
+
+ggsave("Figures/Biplots-prey-comparison.png", width = 16, height = 6, units = "cm", dpi = 600, bg = "white")
+```
+
+```{r scale isotopes plot, include=FALSE, eval=FALSE}
+rm(list = ls())
+Prey <- fread("Data/Prey/Preyfish_SI_clean_average_lipid-corrected.csv")
+Ecotypes <- fread("Data/Pike/Ecotypes-muscle-SI.csv")
+
+#add historics
+Scales0 <- fread("Data/Pike/2024-01-25_NCS_Pike-scales.CSV")
+
+Scales1 <- Scales0%>%
+  transmute(ID = paste0(substr(V3, 1,2), "-", substr(V3, 3,8)),
+            Species = "Historic pike",
+            capt_date = "1980 - 1986",
+            SL_mm = NA,
+            SL_size_class = NA,
+            sex = NA,
+            weight_g = NA,
+            height_mm = NA,
+            sample_type = "Scales",
+            area = "Lagoons",
+            Long = NA,
+            Lat = NA,
+            d15N = V5,
+            d13C = V7,
+            d34S = V9,
+            CN_ratio = V8/V6,
+            comment1 = V11,
+            comment2 = NA) 
+
+Prey$SL_mm <- as.numeric(Prey$SL_mm)
+Ecotypes$capt_date <- as.character(Ecotypes$capt_date)
+
+Prey2 <- Prey%>%
+  filter(Species %in% c("C.harengus", "R.rutilus", "N.melanostomus", "P.fluviatilis", "P.flesus"))%>%
+  mutate(Species = case_when(area == "Barthe" ~ "freshwater food web",
+                           area == "WRB" & Species != "C.harengus" ~ "lagoon food web",
+                           area == "NRB" & Species != "C.harengus" ~ "lagoon food web",
+                           area == "Ziese" ~ "freshwater food web",
+                           area == "Peene" ~ "freshwater food web",
+                           area == "Duwenbeek" ~ "freshwater food web",
+                           area == "Beck" ~ "freshwater food web",
+                           area == "BAT" & Species != "C.harengus" ~ "lagoon food web",
+                           area == "KBW" ~ "freshwater food web",
+                           area == "GB" & Species != "C.harengus" ~ "lagoon food web",
+                           area == "ST" & Species != "C.harengus" ~ "lagoon food web",
+                           area == "GJB" & Species != "C.harengus" ~ "lagoon food web",
+                           TRUE ~ "marine food web"),
+         area = area,
+         sex="NA")
+
+Pikeprey <- rbind(Ecotypes, Prey2, Scales1)
+
+length_by_sp<-aggregate(cbind(d15N, d13C, d34S)~Species, data=Pikeprey, FUN=length)
+length_by_sp
+
+m_by_sp<-aggregate(cbind(d15N, d13C, d34S)~Species, data=Pikeprey, FUN=mean)
+
+sd_by_sp<-aggregate(cbind(d15N, d13C, d34S)~Species, data=Pikeprey, FUN=sd)
+
+descriptive<-cbind(m_by_sp, sd_by_sp)
+descriptive<-descriptive[-5]
+colnames(descriptive)<-c("Sp", "d15N", "d13C", "d34S", "sdd15N", "sdd13C", "sdd34S")
+descriptive
+
+descriptive2 <- descriptive%>%
+  drop_na()
+
+descriptive2$Sp <- as.factor(descriptive2$Sp)
+descriptive2$Sp <- fct_relevel(descriptive2$Sp, "freshwater resident pike", 
+                               "anadromous pike", "cross-habitat pike", "brackish resident pike", "Historic pike")
+
+Pikeprey$Species <- as.factor(Pikeprey$Species)
+Pikeprey$Species <- fct_relevel(Pikeprey$Species, c("freshwater resident pike", 
+                               "anadromous pike", 
+                               "cross-habitat pike", 
+                               "brackish resident pike",
+                               "Historic pike",
+                               "freshwater",
+                               "lagoon",
+                               "marine"))
+
+#brackish resident --> "#004643", anadromous --> "#00BFB2", cross-habitat --> "#F1C40F", freshwater resident --> "#C5D86D"
+
+#Biplot by species
+colorBlindBlack8  <- c("#C5D86D", "#00BFB2", "#F1C40F", "#004643",
+                        "darkorange", "brown4", "green", "#004690")
+
+
+Binorm <- ggplot()+ 
+  geom_errorbar(data=descriptive2, aes(x=d13C, y=d15N, ymin = d15N-sdd15N,ymax = d15N+sdd15N, col=Sp),
+                        width=.5, size=.5) +
+  geom_errorbarh(data=descriptive2, aes(x=d13C, y=d15N, xmin = d13C+sdd13C,xmax = d13C-sdd13C, col=Sp),
+                 height=.5, size=.5)+
+  xlim(-27,-12)+ylim(10,20)+
+  labs(fill = "Group", color = "Group")+
+  theme_bw()+xlab(delta^"13"~"C(\u2030)")+ylab(delta^"15"~"N(\u2030)")+
+  scale_colour_manual(breaks = levels(descriptive2$Sp), 
+                        values=colorBlindBlack8,
+                        labels = levels(descriptive2$Sp))+
+  scale_fill_manual(breaks = levels(descriptive2$Sp), 
+                    values=colorBlindBlack8,
+                    labels = levels(descriptive2$Sp))+
+  theme(text = element_text(size = 10, color = "black"),
+        legend.position="bottom",
+        legend.text = element_text(color = "black", size=5, face="italic"),
+        legend.key.size = unit(.5, 'cm'),
+        strip.background = element_rect(colour="black", fill="white"))
+
+BiNS <- ggplot()+
+  geom_errorbar(data=descriptive2, aes(x=d34S, y=d15N, ymin = d15N-sdd15N,ymax = d15N+sdd15N, color=Sp),
+                        width=.5, size=.5) +
+  geom_errorbarh(data=descriptive2, aes(x=d34S, y=d15N, xmin = d34S+sdd34S,xmax = d34S-sdd34S, color=Sp),
+                 height=.5, size=.5)+
+  xlim(0,25)+ylim(10,20)+
+  labs(fill = "Group", color = "Group")+
+  theme_bw()+xlab(delta^"34"~"S(\u2030)")+ylab(delta^"15"~"N(\u2030)")+
+  scale_colour_manual(breaks = levels(descriptive2$Sp), 
+                        values=colorBlindBlack8,
+                        labels = levels(descriptive2$Sp))+
+  scale_fill_manual(breaks = levels(descriptive2$Sp), 
+                    values=colorBlindBlack8,
+                    labels = levels(descriptive2$Sp))+
+  theme(text = element_text(size = 10, color = "black"),
+        legend.position="none",
+        legend.text = element_text(color = "black", size=5, face="italic"),
+        legend.key.size = unit(.5, 'cm'),
+        strip.background = element_rect(colour="black", fill="white"))
+
+BiCS <- ggplot()+ 
+  geom_errorbar(data=descriptive2, aes(x=d13C, y=d34S, ymin = d34S+sdd34S,ymax = d34S-sdd34S, col=Sp),
+                        width=.5, size=.5) +
+  geom_errorbarh(data=descriptive2, aes(x=d13C, y=d34S, xmin = d13C+sdd13C,xmax = d13C-sdd13C, col=Sp),
+                 height=.5, size=.5)+
+  xlim(-27,-12)+ylim(0,25)+
+  theme_bw()+xlab(delta^"13"~"C(\u2030)")+ylab(delta^"34"~"S(\u2030)")+
+  scale_colour_manual(breaks = levels(descriptive2$Sp), 
+                        values=colorBlindBlack8,
+                        labels = levels(descriptive2$Sp))+
+  scale_fill_manual(breaks = levels(descriptive2$Sp), 
+                    values=colorBlindBlack8,
+                    labels = levels(descriptive2$Sp))+
+  theme(text = element_text(size = 10, color = "black"),
+        legend.position="none",
+        legend.text = element_text(color = "black", size=5, face="italic"),
+        legend.key.size = unit(.5, 'cm'),
+        strip.background = element_rect(colour="black", fill="white"))
+
+
+Ecopike <- ggarrange(Binorm, BiNS, BiCS, ncol = 3, nrow = 1, common.legend = T, labels = c("A", "B", "C"))
+
+ggsave("Figures/Biplot-historic.png", Ecopike, width = 16, height = 6, units = "cm", dpi = 600, bg = "white")
+```
+
+```{r mixing models, include=FALSE, eval=FALSE}
+rm(list = ls())
+
+Pikemaster <- fread("Data/Pike/Pikemaster.csv")
+Prey_all <- fread("Data/Prey/Prey-data-all.csv")
+
+Pikedata <- Pikemaster%>%
+  transmute(Fish_ID, 
+            TL_cm = TL_mm/10, 
+            Sample, Area, Genotype, d13C_muscle, d15N_muscle, d34S_muscle, d13C_scale, d15N_scale, d34S_scale)
+
+Ecopike <- fread("Data/Mixing models/Pikemix-ecotypes_all.csv")
+
+Pikemix_recent <- Pikedata %>%
+  filter(Sample == "Recent")%>%
+  drop_na(Area, Genotype, d13C_muscle, d15N_muscle, d34S_muscle)%>%
+  transmute(Fish_ID, TL_cm, Sample,  
+            Area = case_when(Area %in% c("Sehrowbach", "Barthe", "Peene", "Beek", "Barthe/Peene") ~ "Tributary",
+                             Area %in% c("SB", "KB", "VB") ~ "WRB",
+                             Area %in% c("WB", "KJB", "BEG", "GJB") ~ "NRB",
+                             TRUE ~ Area), 
+            Genotype, 
+            d13C = d13C_muscle,
+            d15N = d15N_muscle,
+            d34S = d34S_muscle)%>%
+  distinct()
+
+fwrite(Pikemix_recent, "Data/Mixing models/Pikemix-recent.csv")
+
+Pikemix_historic <- Pikedata %>%
+  filter(Sample == "Historic") %>%
+  filter(Area != "KD") %>%
+  drop_na(d13C_scale, d15N_scale, d34S_scale)%>%
+  transmute(Fish_ID, TL_cm, Sample, Area, Genotype, 
+            d13C = d13C_scale-3.2,
+            d15N = d15N_scale-0.5,
+            d34S = d34S_scale)%>%
+  distinct()
+
+fwrite(Pikemix_historic, "Data/Mixing models/Pikemix-historic.csv")
+
+Pikemix_historic_geno <- Pikemix_historic %>%
+  drop_na(Genotype)
+
+fwrite(Pikemix_historic_geno, "Data/Mixing models/Pikemix-historic_geno.csv")
+
+mix.filename.hist <- "Data/Mixing models/Pikemix-historic.csv"
+mix.filename.rec <- "Data/Mixing models/Pikemix-recent.csv"
+mix.filename.hist.geno <- "Data/Mixing models/Pikemix-historic_geno.csv"
+mix.test <- "Data/Mixing models/Pikemix-ecotypes_all.csv"
+
+#Prey fish
+Prey_historic <- Prey_all %>%
+  mutate(Sp = case_when(Species == "S.lucioperca" ~ "Freshwater", 
+                        Species == "B.joerkna" ~ "Lagoon",
+                        Species == "G.cernua" ~ "Freshwater", 
+                        Species == "Z.viviparus" ~ "Marine", 
+                        Species == "C.harengus" ~ "Marine", 
+                        Species == "R.rutilus" & area %in% c("WRB", "BAT", "GB", "ST", "GJB", "NRB", "Grabow", "BEG", "S") ~ "Lagoon",
+                        Species == "R.rutilus" & !area %in% c("WRB", "BAT", "GB", "ST", "GJB", "NRB", "Grabow", "BEG", "S") ~ "Freshwater",
+                        Species == "P.fluviatilis" & area %in% c("WRB", "BAT", "GB", "ST", "GJB", "NRB", "Grabow", "BEG", "S") ~ "Lagoon",
+                        Species == "P.fluviatilis" & !area %in% c("WRB", "BAT", "GB", "ST", "GJB", "NRB", "Grabow", "BEG", "S") ~ "Lagoon",
+                        Species == "R. rutilus_historic" & area %in% c("WRB", "BAT", "GB", "ST", "GJB", "NRB", "Grabow", "BEG", "S") ~ "Lagoon",
+                        Species == "R. rutilus_historic" & !area %in% c("WRB", "BAT", "GB", "ST", "GJB", "NRB", "Grabow", "BEG", "S") ~ "Freshwater",
+                        Species == "P.fluviatilis_historic" & area %in% c("WRB", "BAT", "GB", "ST", "GJB", "NRB", "Grabow", "BEG", "S") ~ "Lagoon",
+                        Species == "P.fluviatilis_historic" & !area %in% c("WRB", "BAT", "GB", "ST", "GJB", "NRB", "Grabow", "BEG", "S") ~ "Freshwater",
+                        Species == "P. harengus_historic" ~ "Marine"),
+         d13C = case_when(sample_type == "scale" ~ d13C - 3.2,
+                          TRUE ~ d13C),
+         d15N = case_when(sample_type == "scale" ~ d15N - 0.5,
+                          TRUE ~ d15N)) %>%
+  drop_na(Sp) %>%
+  distinct()
+
+Prey_recent <- Prey_all %>%
+  mutate(Sp = case_when(area=="Barthe"~"freshwater",
+                        area=="Ziese"~"freshwater",
+                        area!="Barthe"&area!="Ziese"&Species=="R.rutilus"~"lagoon",
+                        Species=="C.harengus"~"marine",
+                        Species=="P.flesus"~"marine",
+                        area!="Barthe"&area!="Ziese"&Species=="P.fluviatilis"~"lagoon",
+                        Species=="N.melanostomus"~"lagoon",
+                        TRUE~"Other"),
+         d13C = case_when(sample_type == "scale" ~ d13C - 3.2,
+                          TRUE ~ d13C),
+         d15N = case_when(sample_type == "scale" ~ d15N - 0.5,
+                          TRUE ~ d15N)) %>%
+  drop_na(Sp) %>%
+  filter(Sp != "Other") %>%
+  distinct()
+
+m_by_sp_h <- aggregate(cbind(d15N, d13C, d34S) ~ Sp, data = Prey_historic, FUN = mean)
+m_by_sp_r <- aggregate(cbind(d15N, d13C, d34S) ~ Sp, data = Prey_recent, FUN = mean)
+
+sd_by_sp_h <- aggregate(cbind(d15N, d13C, d34S) ~ Sp, data = Prey_historic, FUN = sd)
+sd_by_sp_r <- aggregate(cbind(d15N, d13C, d34S) ~ Sp, data = Prey_recent, FUN = sd)
+
+length_by_sp_h <- aggregate(cbind(d15N) ~ Sp, data = Prey_historic, FUN = length)
+length_by_sp_r <- aggregate(cbind(d15N) ~ Sp, data = Prey_recent, FUN = length)
+
+descriptive_h <- cbind(m_by_sp_h, sd_by_sp_h, length_by_sp_h)
+descriptive_h <- descriptive_h[c(-5,-9)]
+colnames(descriptive_h)<-c("Sp", "Meand15N", "Meand13C", "Meand34S", "SDd15N", "SDd13C", "SDd34S","n")
+
+descriptive_r <- cbind(m_by_sp_r, sd_by_sp_r, length_by_sp_r)
+descriptive_r <- descriptive_r[c(-5,-9)]
+colnames(descriptive_r)<-c("Sp", "Meand15N", "Meand13C", "Meand34S", "SDd15N", "SDd13C", "SDd34S","n")
+
+fwrite(descriptive_r, "Data/Mixing models/Sources_recent.csv")
+fwrite(descriptive_h, "Data/Mixing models/Sources_historic.csv")
+
+#load mixture data
+mix_test <- load_mix_data(filename=mix.filename.hist.geno, 
+                     iso_names=c("d15N", "d13C", "d34S"),
+                     factors=c("Genotype"),
+                     fac_random=c(FALSE),
+                     fac_nested=c(FALSE),
+                     cont_effects="TL_cm")
+
+# Prepare source data
+source.filename.rec <- "Data/Mixing models/Sources_recent.csv"
+source.filename.hist<- "Data/Mixing models/Sources_historic.csv"
+
+# # Load source data
+source.rec <- load_source_data(filename=source.filename.rec, source_factors=NULL,
+                          conc_dep=FALSE, data_type="means", mix_test)
+
+source.hist <- load_source_data(filename=source.filename.hist, source_factors=NULL,
+                          conc_dep=FALSE, data_type="means", mix_test)
+
+discr.rec <- descriptive_r%>%
+  transmute(Sp=Sp,
+            Meand15N=2.9,
+            Meand13C=1.2,
+            Meand34S=-0.5,
+            SDd15N=0.32,
+            SDd13C=0.3,
+            SDd34S=0.2)
+
+discr.hist <- descriptive_h%>%
+  transmute(Sp=Sp,
+            Meand15N=2.9,
+            Meand13C=1.2,
+            Meand34S=-0.5,
+            SDd15N=0.32,
+            SDd13C=0.3,
+            SDd34S=0.2)
+
+fwrite(discr.rec, "Data/Mixing models/Discrimination-recent.csv")
+fwrite(discr.hist, "Data/Mixing models/Discrimination-historic.csv")
+
+discr.filename.rec <- "Data/Mixing models/Discrimination-recent.csv"
+discr.filename.hist <- "Data/Mixing models/Discrimination-historic.csv"
+
+discr.df.rec <- load_discr_data(filename=discr.filename.rec, mix_test)
+discr.df.hist <- load_discr_data(filename=discr.filename.hist, mix_test)
+
+plot_data(filename="isospace_plotn",
+          plot_save_pdf=FALSE,
+          plot_save_png=FALSE,
+          return_obj = T,
+          mix_test,source.rec,discr.df.rec)
+
+plot_data(filename="isospace_plotn",
+          plot_save_pdf=FALSE,
+          plot_save_png=FALSE,
+          return_obj = T,
+          mix_0_hist,source.hist,discr.df.hist)
+
+
+
+# Write mixing models
+model1_filename <- "Data/Mixing models/Model_recent_NULL.txt"
+model2_filename <- "Data/Mixing models/Model_historic_NULL.txt"
+model3_filename <- "Data/Mixing models/Model_recent_Length.txt"
+model4_filename <- "Data/Mixing models/Model_historic_Length.txt"
+model5_filename <- "Data/Mixing models/Model_recent_genotype.txt"
+model6_filename <- "Data/Mixing models/Model_historic_genotype.txt"
+
+
+resid_err <- TRUE
+process_err <- TRUE
+
+#Save models
+write_JAGS_model(model1_filename, resid_err, process_err, mix_test, source.hist)
+write_JAGS_model(model2_filename, resid_err, process_err, mix_0_hist, source.hist)
+write_JAGS_model(model3_filename, resid_err, process_err, mix_length_rec, source.rec)
+write_JAGS_model(model4_filename, resid_err, process_err, mix_length_hist, source.hist)
+write_JAGS_model(model5_filename, resid_err, process_err, mix_geno_rec, source.rec) 
+write_JAGS_model(model6_filename, resid_err, process_err, mix_geno_hist, source.hist)
+
+#model with uninformative priors
+jags.pike.rec0 <- run_model(run="normal", mix_test, source.hist, discr.df.hist, model1_filename, alpha.prior = 1)
+saveRDS(jags.pike.rec0, "Data/Mixing models/Output/Mixing.model-historic-geno-Length-normal.rds")
+
+jags.pike.hist0 <- run_model(run="test", mix_0_hist, source.hist, discr.df.hist, model2_filename, alpha.prior = 1)
+saveRDS(jags.pike.hist0, "Data/Mixing models/Output/Mixing.model-normal-run--TL.rds")
+
+jags.pike.reclength <- run_model(run="normal", mix_length_rec, source.rec, discr.df.rec, model3_filename, alpha.prior = 1)
+saveRDS(jags.pike.reclength, "Data/Mixing models/Output/Mixing.model-normal-run--area-ecotype-TL.rds")
+
+jags.pike.histlength <- run_model(run="normal", mix_length_hist, source.hist, discr.df.hist, model4_filename, alpha.prior = 1)
+saveRDS(jags.pike.histlength, "Data/Mixing models/Output/Mixing.model-historic-length-test.rds")
+
+jags.pike.recgeno <- run_model(run="test", mix_geno_rec, source.rec, discr.df.rec, model5_filename, alpha.prior = 1)
+saveRDS(jags.pike.recgeno, "Data/Mixing models/Output/Mixing.model-recent-geno-Length-test.rds")
+
+jags.pike.histgeno <- run_model(run="test", mix_geno_hist, source.hist, discr.df.hist, model6_filename, alpha.prior = 1)
+saveRDS(jags.pike.histgeno, "Data/Mixing models/Output/Mixing.model-historic-geno-Length-test.rds")
+
+output_options <- list(summary_save = TRUE,                 
+                       summary_name = "summary_statistics", 
+                       sup_post = TRUE,                    
+                       plot_post_save_pdf = FALSE,           
+                       plot_post_name = "posterior_density",
+                       sup_pairs = TRUE,             
+                       plot_pairs_save_pdf = TRUE,    
+                       plot_pairs_name = "pairs_plot",
+                       sup_xy = TRUE,           
+                       plot_xy_save_pdf = TRUE,
+                       plot_xy_name = "xy_plot",
+                       gelman = TRUE,
+                       heidel = FALSE,  
+                       geweke = TRUE,   
+                       diag_save = TRUE,
+                       diag_name = "diagnostics",
+                       indiv_effect = FALSE,       
+                       plot_post_save_png = FALSE, 
+                       plot_pairs_save_png = FALSE,
+                       plot_xy_save_png = FALSE,
+                       diag_save_ggmcmc = FALSE,
+                       return_obj = TRUE)
+
+#Genotypes: 1 = brackish 1; 2 = brackish 2; 3 = freshwater/anadromous; 4 = brackish 3; 5 = freshwater
+
+g.post2 <- output_posteriors(jags.pike.rec0, mix_test, source.hist, output_options)
+
+saveRDS(g.post2, "Data/Mixing models/Output/Mixing.model-historic-geno-Length-graphics.rds")
+
+g.post2$fac1[[6]]
+```
+
+```{r mixing model comparison, include=FALSE, eval=FALSE}
+rm(list = ls())
+
+#load models
+jags.pike.0 <- readRDS("Data/Mixing models/Output/Mixing.model-normal-run--NULL.rds")
+jags.pike.1 <- readRDS("Data/Mixing models/Output/Mixing.model-normal-run--TL.rds")
+jags.pike.2 <- readRDS("Data/Mixing models/Output/Mixing.model-normal-run--area-ecotype-TL.rds")
+jags.pike.3 <- readRDS("Data/Mixing models/Output/Mixing.model-normal-run--area-genotype-TL.rds")
+jags.pike.4 <- readRDS("Data/Mixing models/Output/Mixing.model-normal-run--ecotype-genotype-TL.rds")
+jags.pike.5 <- readRDS("Data/Mixing models/Output/Mixing.model-normal-run--ecotype-TL.rds")
+jags.pike.6 <- readRDS("Data/Mixing models/Output/Mixing.model-normal-run--genotype-TL.rds")
+jags.pike.7 <- readRDS("Data/Mixing models/Output/Mixing.model-normal-run--area-TL.rds")
+
+#create model list
+mcomp <- list(jags.pike.0, jags.pike.1, jags.pike.2, jags.pike.3, jags.pike.4, jags.pike.5, jags.pike.6, jags.pike.7)
+names(mcomp) <- c("NULL", "body length", "area|phenotype|body length", "area|genotype|body length", "phenotype|genotype|body length",
+                  "phenotype|body length", "genotype|body length", "area|body length")
+
+compare_models(mcomp, loo = TRUE)
+
+#plot continuous variables
+source.filename <- "Data/Mixing models/Sources.csv"
+mix.filename <- "Data/Mixing models/Pikemix-ecotypes.csv"
+discr.filename <- "Data/Mixing models/Discrimination.csv"
+
+# Load mixture data
+#length
+mix1 <- load_mix_data(filename=mix.filename, 
+                     iso_names=c("d15N", "d13C", "d34S"),
+                     factors=c("genotype"),
+                     fac_random=c(FALSE),
+                     fac_nested=c(FALSE),
+                     cont_effects=c("Length"))
+
+
+# Load source data
+source<- load_source_data(filename=source.filename, source_factors=NULL,
+                          conc_dep=FALSE, data_type="means", mix1)
+
+#specify output
+output_options <- list(summary_save = TRUE,                 
+                       summary_name = "summary_statistics", 
+                       sup_post = TRUE,                    
+                       plot_post_save_pdf = FALSE,           
+                       plot_post_name = "posterior_density",
+                       sup_pairs = TRUE,             
+                       plot_pairs_save_pdf = TRUE,    
+                       plot_pairs_name = "pairs_plot",
+                       sup_xy = TRUE,           
+                       plot_xy_save_pdf = TRUE,
+                       plot_xy_name = "xy_plot",
+                       gelman = TRUE,
+                       heidel = FALSE,  
+                       geweke = TRUE,   
+                       diag_save = TRUE,
+                       diag_name = "diagnostics",
+                       indiv_effect = FALSE,       
+                       plot_post_save_png = FALSE, 
+                       plot_pairs_save_png = FALSE,
+                       plot_xy_save_png = FALSE,
+                       diag_save_ggmcmc = FALSE,
+                       return_obj = TRUE)
+
+g.post2 <- output_posteriors(jags.pike.6, mix1, source, output_options)
+
+saveRDS(g.post2, "Data/Mixing models/Output/graphics.rds")
+```
+
+```{r mixing model graphics genotype level, include=FALSE, eval=FALSE}
+rm(list = ls())
+
+g.post2 <- readRDS("Data/Mixing models/Output/Mixing.model-historic-geno-Length-graphics.rds")
+
+#Genotypes: 1 = brackish 1; 2 = brackish 2; 3 = freshwater/anadromous; 4 = brackish 3; 5 = freshwater
+
+Anadrom <- g.post2$fac1[[4]]
+freshwater <- g.post2$fac1[[6]]
+brackish1 <- g.post2$fac1[[2]]
+brackish2 <- g.post2$fac1[[3]]
+brackish3 <- g.post2$fac1[[5]]
+
+pl.theme <- theme(panel.grid.major = element_line(color = "grey", linetype = "solid", size = 0.5),
+                  panel.grid.minor = element_line(color = "lightgrey", linetype = "dashed", size = 0.5),
+                  legend.background = element_blank(),
+                  legend.box.background = element_blank(),
+                  axis.line = element_line(linewidth = .5, colour = "black", linetype = 1),
+                  axis.ticks = element_line(linewidth = .5, colour = "black"),
+                  axis.text = element_text(size = 10, colour = "black"),
+                  axis.text.y = element_text(size = 10, colour = "black"),
+                  axis.title.x = element_blank(),
+                  axis.title.y = element_blank(),
+                  legend.position = "bottom",
+                  legend.text = element_text(size = 10),
+                  legend.title = element_text(size = 10),
+                  legend.key.size = unit(.8,"line"),
+                  plot.title = element_text(size = 10, colour = "black"))
+
+pl.color <- scale_color_manual(breaks = c("Marine", "Lagoon", "Freshwater"),
+                              values = c("#29B6F6", "#00796B","#B71C1C"),
+                              labels = c("Marine resources", "Lagoon resources", "Freshwater resources"))
+pl.fill <- scale_fill_manual(breaks = c("Marine", "Lagoon", "Freshwater"),
+                              values = c("#29B6F6", "#00796B","#B71C1C"),
+                              labels = c("Marine resources", "Lagoon resources", "Freshwater resources"))
+
+scalex <- scale_x_continuous(breaks = c(0, 0.25, 0.50, 0.75, 1.00),
+                   labels = c("0", "25", "50", "75", "100"),
+                   limits = c(0,1))
+
+scaley <- scale_y_continuous(breaks = c(0, 0.25, 0.5, 0.75, 1),
+                             labels = c("0.00", "0.25", "0.50", "0.75", "1.00"))
+
+FW_plot <- freshwater+
+  labs(title = "Freshwater genotype", fill = "source", color = "source")+
+  pl.theme+
+  pl.color+
+  pl.fill+
+  scalex+
+  scaley+
+  guides(color = guide_legend(ncol = 3, nrow = 1))
+
+Ana_plot <- Anadrom+
+  labs(title = "Anadromous genotype", fill = "source", color = "source")+
+  pl.theme+
+  pl.color+
+  pl.fill+
+  scalex+
+  scaley+
+  guides(color = guide_legend(ncol = 3, nrow = 1))
+
+brackish1 <- brackish1+
+  labs(title = "Brackish genotype 1", fill = "source", color = "source")+
+  pl.theme+
+  pl.color+
+  pl.fill+
+  scalex+
+  scaley+
+  guides(color = guide_legend(ncol = 3, nrow = 1))
+
+brackish2 <- brackish2+
+  labs(title = "Brackish genotype 2", fill = "source", color = "source")+
+  pl.theme+
+  pl.color+
+  pl.fill+
+  scalex+
+  scaley+
+  guides(color = guide_legend(ncol = 3, nrow = 1))
+
+brackish3 <- brackish3+
+  labs(title = "Brackish genotype 3", fill = "source", color = "source")+
+  pl.theme+
+  pl.color+
+  pl.fill+
+  scalex+
+  scaley+
+  guides(color = guide_legend(ncol = 3, nrow = 1))
+
+Allplot <- ggarrange(FW_plot, Ana_plot, brackish1, brackish2, brackish3, nrow = 2, ncol = 3, 
+                     common.legend = TRUE)
+Allplot2 <- annotate_figure(Allplot, left = text_grob("posterior density", rot = 90, size = 12), 
+                            bottom = text_grob("diet proportion (%)", size = 12))
+
+ggsave("Figures/pike-diet-historic-genotypes.png", Allplot2, width = 15, height = 15, units = "cm", dpi = 300, bg = "white")
+```
+
+```{r graphics mixing models length, include=FALSE, eval=FALSE}
+rm(list = ls())
+
+g.post2 <- readRDS("Data/Mixing models/Output/Mixing.model-historic-geno-Length-graphics.rds")
+pike <- fread("Data/Mixing models/Pikemix-historic.csv")
+
+#Genotypes: 1 = brackish 1; 2 = brackish 2; 3 = freshwater/anadromous; 4 = brackish 3; 5 = freshwater
+
+Ana_cont_all <- g.post2$cont[[4]]
+Ana_cont <- Ana_cont_all[[1]]
+FW_cont_all <- g.post2$cont[[6]]
+FW_cont <- FW_cont_all[[1]]
+brackish1_cont_all <- g.post2$cont[[2]]
+brackish1_cont <- brackish1_cont_all[[1]]
+brackish2_cont_all <- g.post2$cont[[3]]
+brackish2_cont <- brackish2_cont_all[[1]]
+brackish3_cont_all <- g.post2$cont[[5]]
+brackish3_cont <- brackish3_cont_all[[1]]
+
+pl.theme <- theme(panel.grid.major = element_line(color = "grey", linetype = "solid"),
+                  panel.grid.minor = element_line(color = "lightgrey", linetype = "dashed"),
+                  legend.background = element_blank(),
+                  legend.box.background = element_blank(),
+                  axis.line = element_line(linewidth = .5, colour = "black", linetype = 1),
+                  axis.ticks = element_line(linewidth = .5, colour = "black"),
+                  axis.text = element_text(size = 10, colour = "black"),
+                  axis.text.y = element_text(size = 10, colour = "black"),
+                  axis.title.x = element_blank(),
+                  axis.title.y = element_blank(),
+                  legend.position = "bottom",
+                  legend.text = element_text(size = 10),
+                  legend.title = element_text(size = 10),
+                  legend.key.size = unit(.8,"line"),
+                  plot.title = element_text(size = 10, colour = "black"))
+
+pl.color <- scale_color_manual(breaks = c("Marine", "Lagoon", "Freshwater"),
+                              values = c("#29B6F6", "#00796B","#B71C1C"),
+                              labels = c("Marine resources", "Lagoon resources", "Freshwater resources"))
+pl.fill <- scale_fill_manual(breaks = c("Marine", "Lagoon", "Freshwater"),
+                              values = c("#29B6F6", "#00796B","#B71C1C"),
+                              labels = c("Marine resources", "Lagoon resources", "Freshwater resources"))
+
+scaley2 <- scale_y_continuous(breaks = c(0, 0.25, 0.5, 0.75, 1),
+                             labels = c("0", "25", "50", "75", "100"))
+
+Ana.plot <- Ana_cont+
+  labs(title = "Anadromous genotype", fill = "source", color = "source")+
+  pl.theme+
+  pl.color+
+  pl.fill+
+  scale_x_continuous(breaks = seq(0, 100, 10),
+                     labels = seq(0,100,10),
+                     limits = c(min(pike[pike$Genotype==3,]$TL_cm),
+                              max(pike[pike$Genotype==3,]$TL_cm)))+
+  scaley2
+
+FW.plot <- FW_cont+
+  labs(title = "Freshwater genotype", fill = "source", color = "source")+
+  pl.theme+
+  pl.color+
+  pl.fill+
+  scale_x_continuous(breaks = seq(0, 100, 10),
+                     labels = seq(0,100,10),
+                     limits = c(min(pike[pike$Genotype==5,]$TL_cm),
+                              max(pike[pike$Genotype==5,]$TL_cm)))+
+  scaley2
+
+brackish1_plot <- brackish1_cont+
+  labs(title = "Brackish genotype 1", fill = "source", color = "source")+
+  pl.theme+
+  pl.color+
+  pl.fill+
+  scale_x_continuous(breaks = seq(0, 120, 10),
+                     labels = seq(0,120,10),
+                     limits = c(min(pike[pike$Genotype==1,]$TL_cm),
+                              max(pike[pike$Genotype==1,]$TL_cm)))+
+  scaley2
+
+brackish2_plot <- brackish2_cont+
+  labs(title = "Brackish genotype 2", fill = "source", color = "source")+
+  pl.theme+
+  pl.color+
+  pl.fill+
+  scale_x_continuous(breaks = seq(0, 120, 10),
+                     labels = seq(0,120,10),
+                     limits = c(min(pike[pike$Genotype==2,]$TL_cm),
+                              max(pike[pike$Genotype==2,]$TL_cm)))+
+  scaley2
+
+brackish3_plot <- brackish3_cont+
+  labs(title = "Brackish genotype 2", fill = "source", color = "source")+
+  pl.theme+
+  pl.color+
+  pl.fill+
+  scale_x_continuous(breaks = seq(0, 120, 10),
+                     labels = seq(0,120,10),
+                     limits = c(min(pike[pike$Genotype==4,]$TL_cm),
+                              max(pike[pike$Genotype==4,]$TL_cm)))+
+  scaley2
+
+Allplot <- ggarrange(Ana.plot, FW.plot, brackish1_plot, brackish2_plot, brackish3_plot, nrow = 2, ncol = 3, 
+                     common.legend = T, legend = "top")
+Allplot2 <- annotate_figure(Allplot, left = text_grob("diet proportion (%)", rot = 90, size = 12), 
+                            bottom = text_grob("total length (cm)", size = 12))
+
+ggsave("Figures/length-diet-historic-genotypes.png", Allplot2, width = 15, height = 15, units = "cm", dpi = 300, bg = "white")
+```
+
+```{r}
+rm(list = ls())
+
+Pikemaster <- fread("Data/Pike/Pikemaster.csv")
+
+Pike_recent <- Pikemaster %>%
+  filter(Sample == "Recent") %>%
+  transmute(Fish_ID, TL_mm, Sample, Age, Area, Genotype,
+            d15N = d15N_muscle,
+            d13C = d13C_muscle,
+            d34S = d34S_muscle) %>%
+  drop_na(d15N) %>%
+  distinct()
+
+Pike_historic <- Pikemaster %>%
+  filter(Sample == "Historic") %>%
+  transmute(Fish_ID, TL_mm, Sample, Age, Area, Genotype,
+            d15N = d15N_scale - 0.5,
+            d13C = d13C_scale - 3.2,
+            d34S = d34S_scale) %>%
+  drop_na(d15N) %>%
+  distinct()
+
+recentN <- ggplot(Pike_recent, aes(TL_mm, d15N)) +
+  geom_point() +
+  geom_smooth(method = "lm") +
+  theme_bw()
+
+historicN <- ggplot(Pike_historic, aes(TL_mm, d15N)) +
+  geom_point() +
+  geom_smooth(method = "lm") +
+  theme_bw()
+
+ggsave("Figures/RecentN-pike.png", recentN, width = 15, height = 15, units = "cm", dpi = 300, bg = "white")
+
+ggsave("Figures/HistoricN-pike.png", historicN, width = 15, height = 15, units = "cm", dpi = 300, bg = "white")
+
 ```
 
