@@ -394,16 +394,42 @@ fwrite(Pikemaster6, "Data/Pike/Pikemaster.csv")
 rm(list = ls())
 
 Pikemaster <- fread("Data/Pike/Pikemaster.csv")
+Sexpike <- fread("Data/Pike/molsexed_pike_historic.csv")
 
-Growthtable <- Pikemaster %>%
+Sexpike2 <- Sexpike %>%
+  transmute(Oldenburg_ID = Fish_ID, 
+            Sex_molecular = Sex_Updated) %>%
+  distinct()
+
+Pikemaster$Oldenburg_ID <- gsub("\\.", "-", Pikemaster$Oldenburg_ID)
+
+#check length of historic pike before join
+length(unique(Pikemaster[Pikemaster$Sample == "Historic",]$Fish_ID))
+
+Pikemaster2 <- Pikemaster %>%
+  left_join(Sexpike2, by = "Oldenburg_ID")
+
+
+Pikemaster3 <- Pikemaster2 %>%
+  mutate(Sex = case_when(Sex == ""|is.na(Sex) == TRUE ~ Sex_molecular,
+                         TRUE ~ Sex),
+         Sample = paste0(Sample, "-", Sex)) %>%
+  filter(Sex == "f"|Sex == "m")
+
+fwrite(Pikemaster3, "Data/Pike/Pikemaster_sex.csv")
+
+length(unique(Pikemaster3[Pikemaster3$Sample == "Historic-m",]$Fish_ID))
+
+Growthtable <- Pikemaster3 %>%
   transmute(Fish_ID, TL_mm, Length_back, Sample, Age, Cohort, Sex, Area, Genotype)%>%
   mutate(Sample = case_when(Area %in% c("Sehrowbach", "Barthe", "Peene", "KWB", "Duwenbeek", "Beek") ~ "Freshwater",
                             TRUE ~ Sample),
-         Sample_bin = case_when(Sample == "Recent" ~ 1,
-                                Sample == "Historic" ~ 2,
-                                TRUE ~ 3)) %>%
+         Sample_bin = case_when(Sample == "Recent-f" ~ 1,
+                                Sample == "Recent-m" ~ 2,
+                                Sample == "Historic-f" ~ 3,
+                                Sample == "Historic-m" ~ 4,
+                                TRUE ~ 5)) %>%
   filter(is.na(Age) != TRUE) %>%
-  #filter(Sample != "Historic")%>%
   distinct()
 
 Meansize <- Growthtable %>%
@@ -442,6 +468,9 @@ Ages <- ggplot(Meanage, aes(SK, fill = as.factor(Age)))+
 #Sample sizes
 length(Growthtable[Growthtable$Sample_bin == 1,]$Fish_ID)
 length(Growthtable[Growthtable$Sample_bin == 2,]$Fish_ID)
+length(Growthtable[Growthtable$Sample_bin == 3,]$Fish_ID)
+length(Growthtable[Growthtable$Sample_bin == 4,]$Fish_ID)
+length(Growthtable[Growthtable$Sample_bin == 5,]$Fish_ID)
 
 priors <- fread("Data/Pike/Priors_pike.csv")
 
@@ -466,8 +495,10 @@ stancode <- "Data/Pike/Stan/Simple_VBGF_TZero_historic-vs-recent-vs-freshwater.s
 mod = stan_model(stancode, model_name = "pike growth population")
 
 #fitting
-fit_1 = sampling(mod, iter = 10000, data = standata_Pike1, thin = 100,
+fit_1 = sampling(mod, iter = 40000, data = standata_Pike1, thin = 100,
                    control = list(adapt_delta = 0.95, max_treedepth = 14))
+
+print(fit_1, pars = c("LInf_area[1]", "LInf_area[2]", "LInf_area[3]", "LInf_area[4]", "LInf_area[5]"))
 
 saveRDS(fit_1, "Data/Pike/Stan/Model-recent-vs-historic_complex.rds")
 
@@ -677,20 +708,126 @@ colnames(tab) = c("Parameter", "Posterior median", "90% CI")
 knitr::kable(tab)
 ```
 
+```{r Growth curve comparison sexing, include=FALSE, eval=FALSE}
+rm(list = ls())
+
+Pikemaster <- fread("Data/Pike/Pikemaster.csv")
+Sexpike <- fread("Data/Pike/sexed_pike_all_moddeling.csv")
+
+Sexpike2 <- Sexpike%>%
+  transmute(Fish_ID, Sex_molecular)
+
+Growthtable <- Pikemaster %>%
+  filter(Sample == "Recent")%>%
+  transmute(Fish_ID, TL_mm, Length_back, Sample, Age, Cohort, 
+            Sex_visual = Sex, 
+            Area, Genotype)%>%
+  distinct()%>%
+  left_join(Sexpike2, by = "Fish_ID")%>%
+  drop_na(Sex_visual, Sex_molecular)%>%
+  mutate(Area = case_when(Area %in% c("Sehrowbach", "Barthe", "Peene", "KWB", "Duwenbeek", "Beek") ~ "Tributary",
+                          Area %in% c("NRB", "BAT", "GB", "S", "SB", "U", "KB", "WB", "BEG", "BEZ", "GJB", "VB") ~ "Mesohaline",
+                          Area %in% c("P", "KJB", "SAB") ~ "Oligohaline",
+                          TRUE ~ Area),
+         Sample_bin1 = case_when(Sex_visual == "f" ~ 1,
+                                 Sex_visual == "m" ~ 2,
+                                 TRUE ~ NA),
+         Sample_bin2 = case_when(Sex_molecular == "f" ~ 1,
+                                 Sex_molecular == "m" ~ 2,
+                                 TRUE ~ NA)) %>%
+  drop_na(Sample_bin1, Sample_bin2, Age)%>%
+  distinct()
+
+priors <- fread("Data/Pike/Priors_pike.csv")
+
+standata_Pike1 = list(
+  Length = Growthtable$Length_back/10,
+  Age = Growthtable$Age,
+  N = nrow(Growthtable),
+  Sample = Growthtable$Sample_bin1,
+  linf_mean = mean(priors$Loo), #alt: mean^2/variance & variance/mean
+  linf_var = sd(priors$Loo),
+  t0_mean = mean(priors$to),
+  t0_var = sd(priors$to)^2,
+  k_prior = 1,  
+  n_groupmax = as.integer(length(Growthtable[Growthtable$Sex_visual == "f",]$Fish_ID)),
+  n_group1 = as.integer(length(Growthtable[Growthtable$Sex_visual == "f",]$Fish_ID)),
+  n_group2 = as.integer(length(Growthtable[Growthtable$Sex_visual == "m",]$Fish_ID)),
+  geno_id = Growthtable$Genotype
+)
+
+standata_Pike2 = list(
+  Length = Growthtable$Length_back/10,
+  Age = Growthtable$Age,
+  N = nrow(Growthtable),
+  Sample = Growthtable$Sample_bin2,
+  linf_mean = mean(priors$Loo), #alt: mean^2/variance & variance/mean
+  linf_var = sd(priors$Loo),
+  t0_mean = mean(priors$to),
+  t0_var = sd(priors$to)^2,
+  k_prior = 1,  
+  n_groupmax = as.integer(length(Growthtable[Growthtable$Sex_molecular == "f",]$Fish_ID)),
+  n_group1 = as.integer(length(Growthtable[Growthtable$Sex_molecular == "f",]$Fish_ID)),
+  n_group2 = as.integer(length(Growthtable[Growthtable$Sex_molecular == "m",]$Fish_ID)),
+  geno_id = Growthtable$Genotype
+)
+
+# Model
+stancode <- "Data/Pike/Stan/Simple_VBGF_TZero_sex-specific_gen.stan"
+
+mod = stan_model(stancode, model_name = "pike growth sexing")
+
+#fitting
+fit_1 = sampling(mod, iter = 40000, data = standata_Pike1, thin = 100,
+                   control = list(adapt_delta = 0.95, max_treedepth = 14))
+
+fit_2 = sampling(mod, iter = 40000, data = standata_Pike2, thin = 100,
+                   control = list(adapt_delta = 0.95, max_treedepth = 14))
+
+print(fit_1, pars = c("LInf_f", "LInf_m", "k_f", "k_m", "tZero_f", "tZero_m"))
+print(fit_2, pars = c("LInf_f", "LInf_m", "k_f", "k_m", "tZero_f", "tZero_m"))
+
+saveRDS(fit_1, "Data/Pike/Stan/Model_visual-sex-specific.rds")
+saveRDS(fit_2, "Data/Pike/Stan/Model_molecular-sex-specific.rds")
+
+p = c("LInf_geno", "tZero_geno", "k_geno")
+
+samps = as.matrix(fit_3, pars = p)
+dat = data.frame(
+	estimate = apply(samps, 2, median),
+	lower = apply(samps, 2, quantile, 0.05),
+	upper = apply(samps, 2, quantile, 0.95)
+)
+tab = cbind(rownames(dat), as.character(signif(dat$estimate, 3)), 
+			paste0("(", signif(dat$lower, 3), ", ", signif(dat$upper, 3), ")"))
+colnames(tab) = c("Parameter", "Posterior median", "90% CI")
+
+knitr::kable(tab)
+
+Errorcount <- Growthtable%>%
+  mutate(Sexerror = case_when(Sex_molecular != Sex_visual ~ 1,
+                              TRUE ~ 0))
+
+length(Errorcount[Errorcount$Sexerror == 1,]$Fish_ID)/length(Errorcount$Fish_ID)
+```
+
 ```{r Growth curve plots population and area, include=FALSE, eval=FALSE}
 rm(list = ls())
 
 Pikemaster <- fread("Data/Pike/Pikemaster.csv")
+Pikemaster_sex <- fread("Data/Pike/Pikemaster_sex.csv")
 fit_1 <- read_rds("Data/Pike/Stan/Model-recent-vs-historic_complex.rds")
 fit_2 <- read_rds("Data/Pike/Stan/Model-recent-vs-historic_complex_area-specific.rds")
 
-Growthtable1 <- Pikemaster %>%
+Growthtable1 <- Pikemaster_sex %>%
   transmute(Fish_ID, TL_mm, Length_back, Sample, Age, Cohort, Sex, Area, Genotype)%>%
   mutate(Sample = case_when(Area %in% c("Sehrowbach", "Barthe", "Peene", "KWB", "Duwenbeek", "Beek") ~ "Freshwater",
                             TRUE ~ Sample),
-         Sample_bin = as.factor(case_when(Sample == "Recent" ~ 1,
-                                Sample == "Historic" ~ 2,
-                                TRUE ~ 3))) %>%
+         Sample_bin = as.factor(case_when(Sample == "Recent-f" ~ 1,
+                                Sample == "Recent-m" ~ 2,
+                                Sample == "Historic-f" ~ 3,
+                                Sample == "Historic-m" ~ 4,
+                                TRUE ~ 5))) %>%
   distinct()
 
 Growthtable2 <- Pikemaster %>%
@@ -710,13 +847,13 @@ Growthtable2 <- Pikemaster %>%
 
 Incpredict = function(pars, Agei) pars[1] * (1 - exp(-pars[2] * (Agei - (-pars[3]))))
 
-Pikepredict = function(x, quants = c(0.5, 0.05, 0.95), names = c("median", "lower", "upper")) {
+Pikepredict_sex = function(x, quants = c(0.5, 0.05, 0.95), names = c("median", "lower", "upper")) {
 	pars = c("LInf_area", "k_area", "tZero_area")
 	samps = as.matrix(x, pars = pars)
 
 	# list of 4 phenotypes
 	# each element is a matrix, 20000 rows (samples) by 15 age increments
-	area_pr = lapply(0:2, \(i) t(apply(samps[, c(1, 4, 7) + i], 1, Incpredict, Agei = 1:15)))
+	area_pr = lapply(0:4, \(i) t(apply(samps[, c(1, 6, 11) + i], 1, Incpredict, Agei = 1:15)))
 
 	# convert to a data table summarizing by quantiles
 	area_q = lapply(area_pr, \(x) {
@@ -728,7 +865,7 @@ Pikepredict = function(x, quants = c(0.5, 0.05, 0.95), names = c("median", "lowe
 	rbindlist(area_q, idcol = "area_id")
 }
 
-samples <- Pikepredict(fit_1)
+samples <- Pikepredict_sex(fit_1)
 samples$area_id <- as.factor(samples$area_id)
 
 pl_theme =	theme_classic() +
@@ -745,16 +882,18 @@ pl_theme =	theme_classic() +
         legend.position = c(0.8,0.2),
         plot.title = element_text(size = 14, colour = "black"))
 
-Curve_simple <- ggplot(data = samples) + 
+Curve_pop_complex <- ggplot(data = samples[samples$area_id != 5,]) + 
   geom_ribbon(aes(x = Agei, ymin = lower, ymax = upper, fill = area_id), alpha = 0.5) +
   geom_line(aes(x = Agei, y = median, color = area_id), linewidth = 2) + 
   geom_point(data = Growthtable1, aes(x = Age, y = Length_back/10, color = Sample_bin), size = 1, alpha = .9) + 
   scale_x_continuous(breaks = seq(1,15,1), labels = c("1","","3","","5","","7","","9","","11","","13","","15"))+
-  scale_color_manual(breaks = c(1,2,3), values = c("#004643", "#F1C40F", "#00BFB2"), labels = c("Recent", "Historic", "Tributary"))+
-  scale_fill_manual(breaks = c(1,2,3), values = c("#004643", "#F1C40F", "#00BFB2"), labels = c("Recent", "Historic", "Tributary"))+
+  scale_color_manual(breaks = c(1,2,3,4), values = c("#004643", "#C5D86D", "#00BFB2", "#F1C40F", "#AF3800"), 
+                     labels = c("Recent female", "Recent male", "Historic female", "Historic male"))+
+  scale_fill_manual(breaks = c(1,2,3,4), values = c("#004643", "#C5D86D", "#00BFB2", "#F1C40F", "#AF3800"), 
+                     labels = c("Recent female", "Recent male", "Historic female", "Historic male"))+
   labs(x="Age (years)", y="Total length (cm)", color = "Sample", fill = "Sample") + pl_theme
 
-ggsave("Figures/VB-curve_recent-vs-historic-vs-fresh.png", Curve_simple, width = 15, height = 15, units = "cm", dpi = 600, bg = "white")
+ggsave("Figures/VB-curve_recent-vs-historic-vs-fresh.png", Curve_pop_complex, width = 15, height = 15, units = "cm", dpi = 600, bg = "white")
 
 Pikepredict2 = function(x, quants = c(0.5, 0.05, 0.95), names = c("median", "lower", "upper")) {
 	pars = c("LInf_area", "k_area", "tZero_area")
