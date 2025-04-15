@@ -18,6 +18,8 @@ library(RColorBrewer)
 library(MixSIAR)
 library(plyr)
 library(FSA)
+library(terra)
+library(maps)
 library(brms)
 library(rstan)
 options(mc.cores = parallel::detectCores())
@@ -1100,18 +1102,84 @@ Data_complete <- Data_summary %>%
 fwrite(Data_complete, "Data/Environment/Lungdata-monthly-means.csv")
 ```
 
+```{r import and process surface air temperature, include=FALSE, eval=FALSE}
+rm(list = ls())
+
+# Load the NetCDF file
+era5 <- rast("Data/Environment/ERA5_merged_1970_2024.nc")
+
+# Explore the structure
+print(era5)
+
+slice <- era5[[1]]
+
+# Basic plot with color palette and labels
+plot(slice,
+     main = "ERA5 2m Temperature (First Time Slice)",
+     col = terrain.colors(50),
+     xlab = "Longitude", ylab = "Latitude")
+
+map("world", add = TRUE, col = "black")
+
+# Get the names
+layer_names <- names(era5)
+
+# Extract numeric part after "="
+seconds_since_epoch <- as.numeric(gsub(".*=", "", layer_names))
+
+# Convert to date-time (origin is 1970-01-01)
+layer_times <- as.POSIXct(seconds_since_epoch, origin = "1970-01-01", tz = "UTC")
+
+time(era5) <- layer_times
+
+head(time(era5))
+
+era5_celsius <- era5 - 273.15
+
+plot(era5_celsius[[201]])
+
+tbase <- 10
+
+gdd_daily <- clamp(era5_celsius-tbase, lower = 0)
+
+# Extract year from each date
+years <- format(time(gdd_daily), "%Y")
+
+# Group by year and sum GDDs
+gdd_yearly <- tapp(gdd_daily, years, fun = sum)
+
+# 1. Extract layer names and get years
+years <- names(gdd_yearly)
+years <- sub("X", "", years)
+
+# 2. Calculate mean GDD per year (ignores NAs)
+mean_gdd <- global(gdd_yearly, fun = "mean", na.rm = TRUE)
+
+# 3. Combine into data frame
+gdd_df <- data.frame(
+  Year = as.integer(years),
+  GDD = mean_gdd[, 1]
+)
+
+fwrite(gdd_df, "Data/Environment/GDD_Bodden.csv")
+```
+
 
 ```{r claculate size-independent growth index, include=FALSE, eval=FALSE}
 rm(list = ls())
 
 Pikemaster <- fread("Data/Pike/Pikemaster.csv")
 Sexpike <- fread("Data/Pike/molsexed_pike_historic.csv")
-LUNGdata <- fread("Data/Environment/Lungdata-monthly-means.csv")
+
+length(unique(Pikemaster[Pikemaster$Sample=="Historic",]$Fish_ID))
 
 Sexpike2 <- Sexpike %>%
   transmute(Oldenburg_ID = Fish_ID, 
             Sex_molecular = Sex_Updated) %>%
+  drop_na()%>%
   distinct()
+
+length(unique(Sexpike2$Oldenburg_ID))
 
 Pikemaster$Oldenburg_ID <- gsub("\\.", "-", Pikemaster$Oldenburg_ID)
 
@@ -1120,7 +1188,6 @@ length(unique(Pikemaster[Pikemaster$Sample == "Historic",]$Fish_ID))
 
 Pikemaster2 <- Pikemaster %>%
   left_join(Sexpike2, by = "Oldenburg_ID")
-
 
 Pikemaster3 <- Pikemaster2 %>%
   mutate(Sex = case_when(Sex == ""|is.na(Sex) == TRUE ~ Sex_molecular,
@@ -1164,6 +1231,18 @@ Growthdata <- Pikemaster4 %>%
   drop_na() %>%
   distinct()
 
+fwrite(Growthdata, "Data/Pike/Pikemaster_modelling.csv")
+```
+
+```{r merge data for mixed modelling, include=FALSE, eval=FALSE}
+rm(list = ls())
+
+Growthdata <- fread("Data/Pike/Pikemaster_modelling.csv")
+LUNGdata <- fread("Data/Environment/Lungdata-monthly-means.csv")
+GDDdata <- fread("Data/Environment/GDD_Bodden.csv")
+GDDdata <- GDDdata %>% transmute(Year = year,
+                                 GDD)
+
 #Make yearly means LUNGdata
 LUNGdata_years <- LUNGdata %>%
   group_by(Year, Area)%>%
@@ -1180,7 +1259,8 @@ LUNGdata_years <- LUNGdata %>%
 
 #Join with LUNGdata
 Growthdata2 <- Growthdata%>%
-  left_join(LUNGdata_years, by = c("Area", "Year"))
+  left_join(LUNGdata_years, by = c("Area", "Year"))%>%
+  left_join(GDDdata, by = "Year")
 
 length(unique(Growthdata2$Fish_ID))
 length(unique(Growthdata2[Growthdata2$Sample == "Historic",]$Fish_ID))
