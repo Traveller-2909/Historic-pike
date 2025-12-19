@@ -143,7 +143,6 @@ Pikedata <- fread("Data/Pike/Historic_pike_master.csv")
 
 Pikedata2 <- Pikedata%>%
   left_join(Genotypes3, by = "Oldenburg_ID")%>%
-<<<<<<< HEAD
   transmute(Fish_ID, Date, Waterbody, Total_Length_mm, Sex, Weight, Oldenburg_ID, Old_ID2, Genotype)
 
 Pikedata3 <- Genotypes3 %>%
@@ -151,19 +150,10 @@ Pikedata3 <- Genotypes3 %>%
   transmute(Oldenburg_ID, Old_ID2, Fish_ID)
 
 #Problem: No 1.anything, or 2.anything
-=======
-  transmute(Fish_ID, Date, Waterbody, Total_Length_mm, Sex, Weight, Oldenburg_ID, Genotype)
->>>>>>> b2052a59afeb74cb36b788577d108f9727d3c070
 
 fwrite(Pikedata2, "Data/Pike/Historic_pike_master.csv")
 ```
 
-<<<<<<< HEAD
-=======
-# Growth analysis
-## Cleanup & quality control
-
->>>>>>> b2052a59afeb74cb36b788577d108f9727d3c070
 ```{r Cleanup scale data, include=FALSE, eval=FALSE}
 rm(list = ls())
 
@@ -392,10 +382,7 @@ summary(lm(TL_mm ~ scale_width_mm, data = Pikeages_final3[Pikeages_final3$age<2,
 Pikemaster4 <- Pikemaster3 %>%
   group_by(Fish_ID) %>%
   mutate(Length_back = Radius_mm/Scale_width_mm*TL_mm)%>%
-<<<<<<< HEAD
   mutate(Pisc_mm = Pisc_mm/Scale_width_mm*TL_mm) %>%
-=======
->>>>>>> b2052a59afeb74cb36b788577d108f9727d3c070
   dplyr::mutate(Length_LI = max(Length_back)) %>%
   ungroup() %>%
   distinct()
@@ -424,7 +411,6 @@ Otopike2 <- Otopike %>%
             Length_back, Length_LI)
 
 Pikemaster5 <- rbind.fill(Pikemaster4, Otopike2)
-<<<<<<< HEAD
 
 #join genotypes
 #Load STRUCTURE output file
@@ -494,8 +480,6 @@ Isopike2 <- Isopike%>%
 
 Pikemaster2 <- Pikemaster %>%
   left_join(Isopike2, by = "Fish_ID")
-=======
->>>>>>> b2052a59afeb74cb36b788577d108f9727d3c070
 
 #join genotypes
 #Load STRUCTURE output file
@@ -509,43 +493,29 @@ substrRight <- function(x, n){
 geneticsdata2 <- geneticsdata%>%
   filter(str_detect(V1, "BH"))
 
-#Genotypes: 1 = brackish 1; 1 = brackish 2; 2 = brackish 3; 3 = freshwater/anadromous; 4 = freshwater
+#Genotypes: 1 = brackish 1; 2 = brackish 2; 3 = freshwater/anadromous; 4 = brackish 3; 5 = freshwater
 Genotypes <- geneticsdata2%>%
   transmute(ID=paste0(sub("_","-",substrRight(V1,8))),
-            cluster1 = as.numeric(V2)+as.numeric(V3),
-            cluster2 = as.numeric(V5),
+            cluster1 = as.numeric(V2),
+            cluster2 = as.numeric(V3),
             cluster3 = as.numeric(V4),
-            cluster4 = as.numeric(V6))%>%
+            cluster4 = as.numeric(V5),
+            cluster5 = as.numeric(V6))%>%
   drop_na()
 
 
-Genotypes$clust <- apply(Genotypes[,c(2,3,4,5)], 1, FUN = which.max)
-Genotypes$clustval <- apply(Genotypes[,c(2,3,4,5)], 1, FUN = max)
+Genotypes$clust <- apply(Genotypes[,c(2,3,4,5,6)], 1, FUN = which.max)
+Genotypes$clustval <- apply(Genotypes[,c(2,3,4,5,6)], 1, FUN = max)
 
 Genotypes2 <- Genotypes%>%
   mutate(Genotype = case_when(clustval < 0.5 ~ "0",
                             TRUE~as.character(clust)))
 
-<<<<<<< HEAD
-=======
-Genotypes2$Genotype <- fct_relevel(Genotypes2$Genotype, "4", "3", "1", "2", "0")
-
->>>>>>> b2052a59afeb74cb36b788577d108f9727d3c070
 Genotypes3 <- Genotypes2%>%
   transmute(Fish_ID = ID, Genotype = Genotype)
 
-<<<<<<< HEAD
 Isopike3 <- Isopike %>%
   left_join(Genotypes3, by = "Fish_ID")
-=======
-Pikemaster6 <- Pikemaster5 %>%
-  left_join(Genotypes3, by = "Fish_ID")%>%
-  mutate(Genotype = case_when(is.na(Genotype) == TRUE ~ Genotype2,
-                              TRUE ~ Genotype))%>%
-  select(!Genotype2) %>%
-  filter(Length_back > 0)
-
->>>>>>> b2052a59afeb74cb36b788577d108f9727d3c070
 
 Isoadd <- Isopike3 %>%
   filter(!Fish_ID %in% c(Pikemaster$Fish_ID))%>%
@@ -652,16 +622,10 @@ Pikemaster5 <- plyr::rbind.fill(Pikemaster4, Histo_iso_add)
 #fwrite(Pikemaster5, "Data/Pike/Pikemaster.csv")
 ```
 
-<<<<<<< HEAD
 #Growth analysis
 ## von Bertalanffy growth curves
 
 ```{r Size at age descriptive, include=FALSE, eval=FALSE}
-=======
-## von Bertalanffy growth curves
-
-```{r Growth curve comparison whole sample, include=FALSE, eval=FALSE}
->>>>>>> b2052a59afeb74cb36b788577d108f9727d3c070
 rm(list = ls())
 
 Pikemaster <- fread("Data/Pike/Pikemaster.csv")
@@ -689,15 +653,8 @@ Pikemaster3 <- Pikemaster2 %>%
 
 fwrite(Pikemaster3, "Data/Pike/Pikemaster_sex.csv")
 
-<<<<<<< HEAD
 Growthtable <- Pikemaster3 %>%
   transmute(Fish_ID, Capt_date, TL_mm, Length_LI, Sample, Age, Cohort, Sex, Area, Genotype)%>%
-=======
-length(unique(Pikemaster3[Pikemaster3$Sample == "Historic-f",]$Fish_ID))
-
-Growthtable <- Pikemaster3 %>%
-  transmute(Fish_ID, TL_mm, Length_LI, Sample, Age, Cohort, Sex, Area, Genotype)%>%
->>>>>>> b2052a59afeb74cb36b788577d108f9727d3c070
   mutate(Sample = case_when(Area %in% c("Sehrowbach", "Barthe", "Peene", "KWB", "Duwenbeek", "Beek") ~ "Freshwater",
                             TRUE ~ Sample),
          Sample_bin = case_when(Sample == "Recent-f" ~ 1,
@@ -711,7 +668,6 @@ Growthtable <- Pikemaster3 %>%
 Meansize_hist70s <- Growthtable %>%
   filter(year(Capt_date) < 1980) %>%
   group_by(Age) %>%
-<<<<<<< HEAD
   reframe(
     Decade = "1970",
     Mean_length = mean(Length_LI, na.rm = TRUE),
@@ -746,10 +702,6 @@ SizeByDecade_wide <- Mean_size_at_age %>%
 flextable(SizeByDecade_wide) %>%
   colformat_double(j = 2:3, digits = 2) %>%
   autofit()
-=======
-  reframe(Length_LI_mean = mean(Length_LI),
-          SDlength = sd(Length_LI))
->>>>>>> b2052a59afeb74cb36b788577d108f9727d3c070
 
 Meanage <- Growthtable %>%
   mutate(Length_LI = case_when(Length_LI == 0 ~ TL_mm,
@@ -859,11 +811,7 @@ Pikemaster <- fread("Data/Pike/Pikemaster.csv")
 
 Growthtable <- Pikemaster %>%
   transmute(Fish_ID, TL_mm, Length_LI, Sample, Age, Cohort, Sex, Area, Genotype)%>%
-<<<<<<< HEAD
   mutate(Area = case_when(Area %in% c("Sehrowbach", "Barthe", "Peene", "KWB", "Duwenbeek", "Beek", "NHG", "Badendycksgraben", "Ziese") ~ "Tributary",
-=======
-  mutate(Area = case_when(Area %in% c("Sehrowbach", "Barthe", "Peene", "KWB", "Duwenbeek", "Beek") ~ "Tributary",
->>>>>>> b2052a59afeb74cb36b788577d108f9727d3c070
                           Area %in% c("NRB", "BAT", "GB", "S", "SB", "U", "KB", "WB", "BEG", "BEZ", "GJB", "VB") ~ "Mesohaline",
                           Area %in% c("P", "KJB", "SAB", "DZB") ~ "Oligohaline",
                           TRUE ~ Area),
@@ -929,11 +877,7 @@ Pikemaster <- fread("Data/Pike/Pikemaster.csv")
 Growthtable <- Pikemaster %>%
   filter(Sample == "Historic")%>%
   transmute(Fish_ID, TL_mm, Length_LI, Sample, Age, Cohort, Sex, Area, Genotype)%>%
-<<<<<<< HEAD
   mutate(Area = case_when(Area %in% c("Sehrowbach", "Barthe", "Peene", "KWB", "Duwenbeek", "Beek", "NHG", "Badendycksgraben", "Ziese") ~ "Tributary",
-=======
-  mutate(Area = case_when(Area %in% c("Sehrowbach", "Barthe", "Peene", "KWB", "Duwenbeek", "Beek") ~ "Tributary",
->>>>>>> b2052a59afeb74cb36b788577d108f9727d3c070
                           Area %in% c("NRB", "BAT", "GB", "S", "SB", "U", "KB", "WB", "BEG", "BEZ", "GJB", "VB") ~ "Mesohaline",
                           Area %in% c("P", "KJB", "SAB", "DZB") ~ "Oligohaline",
                           TRUE ~ Area),
@@ -1173,7 +1117,6 @@ Growthtable1 <- Pikemaster_sex %>%
                                 TRUE ~ 5))) %>%
   distinct()
 
-<<<<<<< HEAD
 #Stats
 p = c("LInf_area", "tZero_area", "k_area")
 
@@ -1188,20 +1131,6 @@ tab = cbind(rownames(dat), as.character(signif(dat$estimate, 3)),
 colnames(tab) = c("Parameter", "Posterior median", "90% CI")
 
 knitr::kable(tab)
-=======
-Growthtable2 <- Pikemaster %>%
-  transmute(Fish_ID, TL_mm, Length_LI, Sample, Age, Cohort, Sex, Area, Genotype)%>%
-  mutate(Area = case_when(Area %in% c("Sehrowbach", "Barthe", "Peene", "KWB", "Duwenbeek", "Beek") ~ "Tributary",
-                          Area %in% c("NRB", "BAT", "GB", "S", "SB", "U", "KB", "WB", "BEG", "BEZ", "GJB", "VB") ~ "Mesohaline",
-                          Area %in% c("P", "KJB", "SAB") ~ "Oligohaline",
-                          TRUE ~ Area),
-         Sample_bin = as.factor(case_when(Sample == "Recent" & Area == "Mesohaline" ~ 1,
-                                Sample == "Recent" & Area == "Oligohaline" ~ 2,
-                                Sample == "Recent" & Area == "Tributary" ~ 3,
-                                Sample == "Historic" & Area == "Mesohaline" ~ 4,
-                                Sample == "Historic" & Area == "Oligohaline" ~ 5))) %>%
-  distinct()
->>>>>>> b2052a59afeb74cb36b788577d108f9727d3c070
 
 #extract samples
 
@@ -1548,35 +1477,17 @@ gdd_df <- data.frame(
 fwrite(gdd_df, "Data/Environment/GDD_Bodden.csv")
 ```
 
-<<<<<<< HEAD
 ```{r calculate size-independent growth index, include=FALSE, eval=FALSE}
-=======
-
-```{r claculate size-independent growth index, include=FALSE, eval=FALSE}
->>>>>>> b2052a59afeb74cb36b788577d108f9727d3c070
 rm(list = ls())
 
 Pikemaster <- fread("Data/Pike/Pikemaster.csv")
 Sexpike <- fread("Data/Pike/molsexed_pike_historic.csv")
 
-<<<<<<< HEAD
 Sexpike2 <- Sexpike %>%
   transmute(Oldenburg_ID = Fish_ID, 
             Sex_molecular = Sex_Updated) %>%
   distinct()
 
-=======
-length(unique(Pikemaster[Pikemaster$Sample=="Historic",]$Fish_ID))
-
-Sexpike2 <- Sexpike %>%
-  transmute(Oldenburg_ID = Fish_ID, 
-            Sex_molecular = Sex_Updated) %>%
-  drop_na()%>%
-  distinct()
-
-length(unique(Sexpike2$Oldenburg_ID))
-
->>>>>>> b2052a59afeb74cb36b788577d108f9727d3c070
 Pikemaster$Oldenburg_ID <- gsub("\\.", "-", Pikemaster$Oldenburg_ID)
 
 #check length of historic pike before join
@@ -1585,7 +1496,6 @@ length(unique(Pikemaster[Pikemaster$Sample == "Historic",]$Fish_ID))
 Pikemaster2 <- Pikemaster %>%
   left_join(Sexpike2, by = "Oldenburg_ID")
 
-<<<<<<< HEAD
 unique(Pikemaster2$Sex)
 
 Pikemaster3 <- PikeSexPikemaster3 <- Pikemaster2 %>%
@@ -1599,22 +1509,12 @@ length(unique(Pikemaster3$Fish_ID))
 length(unique(Pikemaster3[Pikemaster3$Sample == "Historic",]$Fish_ID))
 
 unique(Pikemaster3$Sex)
-=======
-Pikemaster3 <- Pikemaster2 %>%
-  mutate(Sex = case_when(Sex == ""|is.na(Sex) == TRUE ~ Sex_molecular,
-                         TRUE ~ Sex)) %>%
-  filter(Sex == "f"|Sex == "m")
->>>>>>> b2052a59afeb74cb36b788577d108f9727d3c070
 
 fwrite(Pikemaster3, "Data/Pike/Pikemaster_sexed.csv")
 
 #linear regression of length at age i + 1 with length at age i
 Pikemaster4 <- Pikemaster3 %>%
-<<<<<<< HEAD
   filter(Sex %in% c("f", "m", "u")) %>%
-=======
-  filter(Sex %in% c("f", "m")) %>%
->>>>>>> b2052a59afeb74cb36b788577d108f9727d3c070
   arrange(Fish_ID, Lifeyear) %>%
   group_by(Fish_ID) %>%
   dplyr::mutate(Length_back2 = lag(Length_back)) %>%
@@ -1623,15 +1523,10 @@ Pikemaster4 <- Pikemaster3 %>%
 #Model Length at age with length at age-1
 LM_f <- lm(Length_back ~ Length_back2, data = Pikemaster4[Pikemaster4$Sex == "f",])
 LM_m <- lm(Length_back ~ Length_back2, data = Pikemaster4[Pikemaster4$Sex == "m",])
-<<<<<<< HEAD
 LM_u <- lm(Length_back ~ Length_back2, data = Pikemaster4[Pikemaster4$Sex == "u",])
 summary(LM_f)
 summary(LM_m)
 summary(LM_u)
-=======
-summary(LM_f)
-summary(LM_m)
->>>>>>> b2052a59afeb74cb36b788577d108f9727d3c070
 
 ggplot(Pikemaster4[Pikemaster4$Sex == "f"|Pikemaster4$Sex == "m",], aes(Length_back, Length_back2, color = Sex))+
   geom_point()+
@@ -1640,7 +1535,6 @@ ggplot(Pikemaster4[Pikemaster4$Sex == "f"|Pikemaster4$Sex == "m",], aes(Length_b
 #Extract slopes
 slope_f <- coef(LM_f)[2]
 slope_m <- coef(LM_m)[2]
-<<<<<<< HEAD
 slope_u <- coef(LM_u)[2]
 
 Growthdata <- Pikemaster4 %>%
@@ -1657,39 +1551,14 @@ length(unique(Growthdata$Fish_ID))
 length(unique(Growthdata[Growthdata$Sample == "Historic",]$Fish_ID))
 
 fwrite(Growthdata, "Data/Pike/Pikedata_agespecmodel.csv")
-=======
-
-Growthdata <- Pikemaster4 %>%
-  mutate(GIndex = case_when(Sex == "f" ~ Length_back - slope_f * Length_back2,
-                            Sex == "m" ~ Length_back - slope_m * Length_back2)) %>%
-  mutate(GIndex = case_when(is.na(GIndex) == "TRUE" ~ Length_back,
-                            TRUE ~ GIndex)) %>%
-  transmute(Fish_ID, Sample, Lifeyear, Cohort, Year, Sex, 
-            Area = case_when(Area %in% c("KB", "SB", "VB") ~ "WRB",
-                             Area %in% c("BEZ", "WB", "BEG", "GJB") ~ "NRB",
-                             TRUE ~ Area), 
-            Pisc_mm, Genotype, GIndex) %>%
-  drop_na() %>%
-  distinct()
-
-fwrite(Growthdata, "Data/Pike/Pikemaster_modelling.csv")
->>>>>>> b2052a59afeb74cb36b788577d108f9727d3c070
 ```
 
 ```{r merge data for mixed modelling, include=FALSE, eval=FALSE}
 rm(list = ls())
 
-<<<<<<< HEAD
 Growthdata <- fread("Data/Pike/Pikedata_agespecmodel.csv")
 LUNGdata <- fread("Data/Environment/Lungdata-monthly-means.csv")
 GDDdata <- fread("Data/Environment/GDD_Bodden.csv")
-=======
-Growthdata <- fread("Data/Pike/Pikemaster_modelling.csv")
-LUNGdata <- fread("Data/Environment/Lungdata-monthly-means.csv")
-GDDdata <- fread("Data/Environment/GDD_Bodden.csv")
-GDDdata <- GDDdata %>% transmute(Year = year,
-                                 GDD)
->>>>>>> b2052a59afeb74cb36b788577d108f9727d3c070
 
 #Make yearly means LUNGdata
 LUNGdata_years <- LUNGdata %>%
@@ -1745,16 +1614,11 @@ hist(Growthdata$GIndex, main = "", xlab = "Growth index")
 hist(Growthdata$Pisc_mm, main = "", xlab = "Piscivory increment")
 ```
 
-<<<<<<< HEAD
 ```{r modelling random effects, include=FALSE, eval=FALSE}
-=======
-```{r modelling}
->>>>>>> b2052a59afeb74cb36b788577d108f9727d3c070
 rm(list = ls())
 
 Growthdata <- fread("Data/Pike/Pikedata_agespecmodel.csv")
 
-<<<<<<< HEAD
 # fit_base1 <- brm(GIndex ~ Lifeyear + Sex + Sample + Genotype + Area + (1|Fish_ID),
 #                  data = Growthdata, family = Gamma(link = "log"),
 #                  control = list(max_treedepth = 15, adapt_delta = 0.95),
@@ -2015,37 +1879,6 @@ Agegrowth <- ggplot(Growthdata, aes(factor(Lifeyear), GIndex, fill = Sample), al
 ggsave("Figures/Age-dependent.png", Agegrowth, width = 16, height = 9, units = "cm", dpi = 600, bg = "white")
 
 ```
-=======
-#Set up model
-standata_Growth = list(
-  N = nrow(Growthdata),
-  N_ind = length(unique(Growthdata$Fish_ID)),
-  N_cohort = length(unique(Growthdata$Cohort)),
-  N_year = length(unique(Growthdata$Year)),
-  ind = as.integer(factor(Growthdata$Fish_ID)), #alt: mean^2/variance & variance/mean
-  cohort = as.integer(factor(Growthdata$Cohort)),
-  year = as.integer(factor(Growthdata$Year)),
-  lifeyear = as.integer(factor(Growthdata$Lifeyear)),
-  sex = as.integer(factor(Growthdata$Sex)),  
-  growth_index = Growthdata$GIndex
-)
-
-# Model
-stancode <- "Data/Pike/Stan/LinearMixedEffect.stan"
-
-mod = stan_model(stancode, model_name = "age-specific pike growth")
-
-#fitting
-fit_1 = sampling(mod, iter = 500, data = standata_Growth, thin = 1, control = list(adapt_delta = 0.95, max_treedepth = 14))
-
-print(fit_1, pars = c("alpha", "beta_lifeyear", "beta_sex", "sigma"))
-
-fit2 <- brm(GIndex ~ Lifeyear + Sex + (1|Year) + (1|Cohort) + (1|Fish_ID), data = Growthdata, family = gaussian())
-summary(fit2)
-```
-
-
->>>>>>> b2052a59afeb74cb36b788577d108f9727d3c070
 
 # Isotope analysis
 
@@ -2066,173 +1899,6 @@ Sample <- Pikemaster2%>%
 fwrite(Sample, "Data/Pike/Historic_pike_SI-sample.csv")
 ```
 
-<<<<<<< HEAD
-=======
-```{r join age readings with isotope data, include=FALSE, eval=FALSE}
-#Create overview list of pike for which SI data and scale readings exist to identify fish that need SI reading
-#Script uses already processed data, will change when data is run through final data check of MS 3
-
-rm(list = ls())
-
-Pikemaster <- fread("Data/Pike/Pikemaster.csv")
-#Complete isotope dataset
-Isopike <- fread("Data/Pike/Pike_SI_all_clean_average_lipid-corrected.csv")
-Isopike$Fish_ID <- Isopike$ID
-
-
-#Filter for pike with complete isotope measurements
-Isopike2 <- Isopike%>%
-  transmute(Fish_ID = Fish_ID,
-            d15N_muscle = d15N,
-            d13C_muscle = d13C,
-            d34S_muscle = d34S) %>%
-  distinct()
-
-Pikemaster2 <- Pikemaster %>%
-  left_join(Isopike2, by = "Fish_ID")
-
-#join genotypes
-#Load STRUCTURE output file
-geneticsdata <- read.delim("Data/Pike/struct_K5_1_f_GTinfo_historic.txt", sep = "", dec = ".", header = F, stringsAsFactors = F)
-
-substrRight <- function(x, n){
-  substr(x, nchar(x)-n+1, nchar(x))
-}
-
-#prefilter
-geneticsdata2 <- geneticsdata%>%
-  filter(str_detect(V1, "BH"))
-
-#Genotypes: 1 = brackish 1; 2 = brackish 2; 3 = freshwater/anadromous; 4 = brackish 3; 5 = freshwater
-Genotypes <- geneticsdata2%>%
-  transmute(ID=paste0(sub("_","-",substrRight(V1,8))),
-            cluster1 = as.numeric(V2),
-            cluster2 = as.numeric(V3),
-            cluster3 = as.numeric(V4),
-            cluster4 = as.numeric(V5),
-            cluster5 = as.numeric(V6))%>%
-  drop_na()
-
-
-Genotypes$clust <- apply(Genotypes[,c(2,3,4,5,6)], 1, FUN = which.max)
-Genotypes$clustval <- apply(Genotypes[,c(2,3,4,5,6)], 1, FUN = max)
-
-Genotypes2 <- Genotypes%>%
-  mutate(Genotype = case_when(clustval < 0.5 ~ "0",
-                            TRUE~as.character(clust)))
-
-Genotypes3 <- Genotypes2%>%
-  transmute(Fish_ID = ID, Genotype = Genotype)
-
-Isopike3 <- Isopike %>%
-  left_join(Genotypes3, by = "Fish_ID")
-
-Isoadd <- Isopike3 %>%
-  filter(!Fish_ID %in% c(Pikemaster$Fish_ID))%>%
-  transmute(Fish_ID, TL_mm,
-            Sample = "Recent",
-            Age = NA,
-            Cohort = NA,
-            Weight = weight_g,
-            Sex = sex,
-            Area = area,
-            Capt_date = capt_date,
-            Lifeyear = NA,
-            Year = NA,
-            Increment_mm = NA,
-            Radius_mm = NA,
-            Scale_width_mm = NA,
-            Pisc_mm = NA,
-            Scale = NA,
-            Imaging = NA,
-            Oldenburg_ID = NA,
-            Genotype,
-            Length_back = NA,
-            Length_LI = NA,
-            d15N_muscle = d15N,
-            d13C_muscle = d13C,
-            d34S_muscle = d34S)
-
-Pikemaster3 <- rbind(Pikemaster2, Isoadd)
-
-#Join scale isotopes
-Isoall <- fread("Data/Pike/2024-06-21_NCS_TRittweg_Results.CSV")
-
-Isoscales <- Isoall %>%
-  filter(Identifier_1 == "scale")%>%
-  transmute(Fish_ID = case_when(startsWith(Identifier_2, "BH") ~ paste0(substr(Identifier_2, 1,2), "-", substr(Identifier_2, 3,7)),
-                             TRUE ~ Identifier_2),
-            d13C_scale = as.numeric(`d13C/12C_Calculated`),
-            d15N_scale = as.numeric(`d15N/14N_Calculated`),
-            d34S_scale = as.numeric(`d34S/32S_Calculated`),
-            CN_ratio = as.numeric(Cperc)/as.numeric(Nperc))
-
-#join with other scale isotopes
-
-Scales0 <- fread("Data/Pike/2024-01-25_NCS_Pike-scales.CSV")
-Scales1 <- Scales0 %>%
-  transmute(Fish_ID = paste0(substr(V3, 1,2), "-", substr(V3, 3,7)),
-            d13C_scale = as.numeric(V7),
-            d15N_scale = as.numeric(V5),
-            d34S_scale = as.numeric(V9),
-            CN_ratio = as.numeric(V8)/as.numeric(V6))
-
-Isoscales2 <- rbind(Isoscales, Scales1)
-
-ggplot(data = Isoscales2, aes(CN_ratio, d13C_scale))+
-  geom_smooth(method = "lm")+
-  geom_point()+
-  theme_bw()
-
-Isoscales3 <- Isoscales2 %>%
-  group_by(Fish_ID) %>%
-  reframe(Fish_ID,
-                   d13C_scale = mean(d13C_scale),
-                   d15N_scale = mean(d15N_scale),
-                   d34S_scale = mean(d34S_scale)) %>%
-  ungroup() %>%
-  distinct()
-
-#Join with pikemaster
-Pikemaster4 <- Pikemaster3 %>%
-  left_join(Isoscales3, by = "Fish_ID")%>%
-  distinct()
-
-#Check mising fish
-Isoscales_check <- Isoscales3 %>%
-  filter(startsWith(Fish_ID, "BH-80")) %>%
-  distinct()
-
-Pikecheck <- Pikemaster2 %>%
-  filter(startsWith(Fish_ID, "BH-80"))%>%
-  transmute(Fish_ID,
-            Fish_ID2 = Fish_ID)
-
-Isocheck <- Isoscales_check %>%
-  left_join(Pikecheck, by = "Fish_ID") %>%
-  distinct() %>%
-  filter(is.na(Fish_ID2) == TRUE)
-
-#Adjoin missing fish
-Histopike <- fread("Data/Pike/Historic_pike_master.csv")
-
-Histo_iso_add <- Histopike %>%
-  left_join(Isocheck, by = "Fish_ID")%>%
-  drop_na(d34S_scale)%>%
-  transmute(Fish_ID, 
-            TL_mm = Total_Length_mm,
-            Sample = "Historic",
-            Capt_date = Date,
-            Sex,
-            Area = Waterbody,
-            Weight, Genotype, d13C_scale, d15N_scale, d34S_scale)
-
-Pikemaster5 <- plyr::rbind.fill(Pikemaster4, Histo_iso_add)
-
-#fwrite(Pikemaster5, "Data/Pike/Pikemaster.csv")
-```
-
->>>>>>> b2052a59afeb74cb36b788577d108f9727d3c070
 ```{r correction factor pike, include=FALSE, eval=FALSE}
 rm(list = ls())
 
@@ -3175,11 +2841,7 @@ Pike.length <- ggplot(Pike.contrib)+
 ```
 
 
-<<<<<<< HEAD
 ```{r isofigures}
-=======
-```{r}
->>>>>>> b2052a59afeb74cb36b788577d108f9727d3c070
 rm(list = ls())
 
 Pikemaster <- fread("Data/Pike/Pikemaster.csv")
