@@ -1731,10 +1731,10 @@ length(unique(Growthdata[Growthdata$Sample == "Historic",]$Fish_ID))
 # 
 # saveRDS(fit_HistYearinteract, "Data/GLMM_output/Model_fixed-Hist-interaction.rds")
 # 
-# fit_HistGenointeract <- brm(GIndex ~ Lifeyear + Sex + Sample * Genotype + Lifeyear + Area + (1|Fish_ID) + (1|Year) + (1|Cohort),
-#                                 data = Growthdata, family = Gamma(link = "log"),
-#                                 control = list(max_treedepth = 15, adapt_delta = 0.95),
-#                                 iter = 40000, warmup = 20000, chains = 4)
+fit_HistGenointeract <- brm(GIndex ~ Lifeyear + Sex + Sample * Genotype + Lifeyear + Area + (1|Fish_ID) + (1|Year) + (1|Cohort),
+                                data = Growthdata, family = Gamma(link = "log"),
+                                control = list(max_treedepth = 15, adapt_delta = 0.95),
+                                iter = 40000, warmup = 20000, chains = 4)
 # 
 # saveRDS(fit_HistGenointeract, "Data/GLMM_output/Model_fixed-Samp-Geno-interaction.rds")
 
@@ -1873,7 +1873,7 @@ saveRDS(fit_noInter, "Data/GLMM_output/Model_no-Inter.rds")
 
 ```
 
-```{r modelling age-specific growth figures}
+```{r modelling age-specific growth figures, include=FALSE, eval=FALSE}
 rm(list = ls())
 
 Growthdata <- fread("Data/Pike/Pikedata_agespecmodel.csv")
@@ -1975,6 +1975,8 @@ rm(list = ls())
 
 Pikemaster <- fread("Data/Pike/Historic_pike_master.csv")
 
+set.seed(123)
+
 Pikemaster2 <- Pikemaster%>%
   mutate(Size_class = cut(Total_Length_mm, breaks = seq(0, 125, by = 25)))
 
@@ -2012,6 +2014,8 @@ plot(d13C_muscle~d13C_scale, data = Pikemaster2)
 abline(-5.46, 0.84)
 dev.off()
 
+#Correction factor for scale d13C: -3.2
+
 t.test(Pikemaster2$d15N_muscle, Pikemaster2$d15N_scale, paired = TRUE)
 summary(lm(d15N_muscle~d15N_scale, data = Pikemaster2))
 
@@ -2026,16 +2030,20 @@ plot(d15N_muscle~d15N_scale, data = Pikemaster2)
 abline(5.15, 0.65)
 dev.off()
 
+#Correction factor for scale d15N: -0.5
+
 t.test(Pikemaster2$d34S_muscle, Pikemaster2$d34S_scale, paired = TRUE)
 #Not different, so no correction needed
 
 Pikemaster3 <- Pikemaster %>%
-  mutate(d13C_scale_cor = d13C_scale-3.2,
-         d15N_scale_cor = d15N_scale-0.5,
-         d34S_scale_cor = d34S_scale)
+  mutate(d13C_scale = d13C_scale-3.2,
+         d15N_scale = d15N_scale-0.5,
+         d34S_scale = d34S_scale)
+
+#fwrite(Pikemaster3, "Data/Pike/Pikemaster.csv")
 ```
 
-```{r prey fish scale data, include=FALSE, eval=FALSE}
+```{r prey fish scale isotope data, include=FALSE, eval=FALSE}
 rm(list = ls())
 
 Isoall <- fread("Data/Pike/2024-06-21_NCS_TRittweg_Results.CSV")
@@ -2057,8 +2065,8 @@ Isoscales <- Isoall %>%
   filter(Identifier_1 == "scale" & !startsWith(Identifier_2, "BH"))%>%
   reframe(Fish_ID = case_when(startsWith(Identifier_2, "BH") ~ paste0(substr(Identifier_2, 1,2), "-", substr(Identifier_2, 3,7)),
                              TRUE ~ Identifier_2),
-            d13C = as.numeric(`d13C/12C_Calculated`-3.2),
-            d15N = as.numeric(`d15N/14N_Calculated`-0.5),
+            d13C = as.numeric(`d13C/12C_Calculated`),
+            d15N = as.numeric(`d15N/14N_Calculated`),
             d34S = as.numeric(`d34S/32S_Calculated`),
             CN_ratio = as.numeric(Cperc)/as.numeric(Nperc))
 
@@ -2081,70 +2089,6 @@ Prey_historic3 <- Prey_historic2 %>%
 Prey_all <- rbind(Prey_recent, Prey_historic3)
 
 fwrite(Prey_all, "Data/Prey/Prey-data-all.csv")
-```
-
-```{r prey fish scale data plot, include=FALSE, eval=FALSE}
-#Plot data
-m_by_sp<-aggregate(cbind(d15N, d13C, d34S)~Species, data=Prey_all, FUN=mean)
-
-sd_by_sp<-aggregate(cbind(d15N, d13C, d34S)~Species, data=Prey_all, FUN=sd)
-
-length_by_sp<-aggregate(cbind(d15N)~Species, data=Prey_all, FUN=length)
-
-descriptive<-cbind(m_by_sp, sd_by_sp, length_by_sp)
-descriptive<-descriptive[c(-5,-9)]
-colnames(descriptive)<-c("Sp", "d15N", "d13C", "d34S", "sdd15N", "sdd13C", "sdd34S","n")
-
-descriptive2 <- descriptive %>%
-  filter(Sp %in% c("C.harengus", "C. harengus_historic", "P.fluviatilis", "P.fluviatilis_historic", "R.rutilus", "R. rutilus_historic"))
-
-brewer.pal(n = 14, name = "Dark2")
-colorBlindBlack8  <- c("#1B9E77", "#D95F02", "#7570B3", "#E7298A", "#66A61E", "#E6AB02", "#A6761D", "#666666","darkblue","darkred","cyan","red","darkgreen", "orange","blue")
-
-Binorm <- ggplot()+ 
-  geom_errorbar(data=descriptive2, aes(x = d13C, ymin = d15N-sdd15N,ymax = d15N+sdd15N, col=Sp), width=.5, linewidth=.5) +
-  geom_errorbarh(data=descriptive2, aes(y = d15N, xmin = d13C+sdd13C,xmax = d13C-sdd13C, col=Sp), height=.5, linewidth=.5)+
-  scale_colour_manual("", values=colorBlindBlack8)+ #1:nlevels(sources$prey))+
-  scale_fill_manual("", values=colorBlindBlack8)+
-  xlim(-30,-12)+ylim(8,18)+
-  theme_bw()+xlab(delta^"13"~"C(\u2030)")+ylab(delta^"15"~"N(\u2030)")+
-  theme(text = element_text(size = 10, color = "black"),
-        legend.position="bottom",
-        legend.text = element_text(color = "black", size=5, face="italic"),
-        legend.key.size = unit(.5, 'cm'),
-        strip.background = element_rect(colour="black", fill="white"))
-
-BiNS <- ggplot()+ geom_errorbar(data=descriptive2, aes(x=d34S, y=d15N, ymin = d15N-sdd15N,ymax = d15N+sdd15N, col=Sp),
-                        width=.5, size=.5) + 
-  geom_errorbarh(data=descriptive2, aes(x=d34S, y=d15N, xmin = d34S+sdd34S,xmax = d34S-sdd34S, col=Sp),
-                 height=.5, size=.5)+
-  scale_colour_manual("", values=colorBlindBlack8)+ #1:nlevels(sources$prey))+
-  scale_fill_manual("", values=1:nlevels(descriptive2$sp))+
-  xlim(5,22)+ylim(8,18)+
-  theme_bw()+xlab(delta^"34"~"S(\u2030)")+ylab(delta^"15"~"N(\u2030)")+
-  theme(text = element_text(size = 10, color = "black"),
-        legend.position="none",
-        legend.text = element_text(color = "black", size=5, face="italic"),
-        legend.key.size = unit(.5, 'cm'),
-        strip.background = element_rect(colour="black", fill="white"))
-
-BiCS <- ggplot()+ geom_errorbar(data=descriptive2, aes(x=d13C, y=d34S, ymin = d34S+sdd34S,ymax = d34S-sdd34S, col=Sp),
-                        width=.5, size=.5) + 
-  geom_errorbarh(data=descriptive2, aes(x=d13C, y=d34S, xmin = d13C+sdd13C,xmax = d13C-sdd13C, col=Sp),
-                 height=.5, size=.5)+
-  scale_colour_manual("", values=colorBlindBlack8)+ #1:nlevels(sources$prey))+
-  scale_fill_manual("", values=1:nlevels(descriptive2$sp))+
-  xlim(-30,-12)+ylim(5,22)+
-  theme_bw()+xlab(delta^"13"~"C(\u2030)")+ylab(delta^"34"~"S(\u2030)")+
-  theme(text = element_text(size = 10, color = "black"),
-        legend.position="none",
-        legend.text = element_text(color = "black", size=5, face="italic"),
-        legend.key.size = unit(.5, 'cm'),
-        strip.background = element_rect(colour="black", fill="white"))
-
-Allplot <- ggarrange(Binorm, BiNS, BiCS, ncol = 3, nrow = 1, common.legend = T, labels = c("A", "B", "C"))
-
-ggsave("Figures/Biplots-prey-comparison.png", width = 16, height = 6, units = "cm", dpi = 600, bg = "white")
 ```
 
 ```{r scale isotopes plot, include=FALSE, eval=FALSE}
@@ -2245,7 +2189,7 @@ CN <- ggplot()+
                       values=colorBlindBlack8,
                       labels = levels(descriptiveprey$Sp))+
   scale_fill_manual(breaks = c("Historic", "Recent"), 
-                    values = c("#1B9E77","darkgreen"),
+                    values = c("#00BFB2","#C5D86D"),
                     labels = c("Historic pike", "Recent pike"))+
   theme(text = element_text(size = 10, color = "black"),
         legend.position="bottom",
@@ -2269,7 +2213,7 @@ CS <- ggplot()+
                       values=colorBlindBlack8,
                       labels = levels(descriptiveprey$Sp))+
   scale_fill_manual(breaks = c("Historic", "Recent"), 
-                    values = c("#1B9E77","darkgreen"),
+                    values = c("#00BFB2","#C5D86D"),
                     labels = c("Historic pike", "Recent pike"))+
   theme(text = element_text(size = 10, color = "black"),
         legend.position="none",
@@ -2293,7 +2237,7 @@ NS <- ggplot()+
                       values=colorBlindBlack8,
                       labels = levels(descriptiveprey$Sp))+
   scale_fill_manual(breaks = c("Historic", "Recent"), 
-                    values = c("#1B9E77","darkgreen"),
+                    values = c("#00BFB2","#C5D86D"),
                     labels = c("Historic pike", "Recent pike"))+
   theme(text = element_text(size = 10, color = "black"),
         legend.position="none",
@@ -2309,7 +2253,7 @@ Ecopike <- ggarrange(CN, CS, NS, ncol = 3, nrow = 1, common.legend = T, labels =
 ggsave("Figures/Biplot-historic-vs-Recent.png", Ecopike, width = 16, height = 6, units = "cm", dpi = 600, bg = "white")
 ```
 
-```{r mixing models, include=FALSE, eval=FALSE}
+```{r isotope modelling, include=FALSE, eval=FALSE}
 rm(list = ls())
 
 Pikemaster <- fread("Data/Pike/Pikemaster.csv")
@@ -2318,666 +2262,194 @@ Prey_all <- fread("Data/Prey/Prey-data-all.csv")
 Pikedata <- Pikemaster%>%
   transmute(Fish_ID, 
             TL_cm = TL_mm/10, 
-            Sample, Area, Genotype, d13C_muscle, d15N_muscle, d34S_muscle, d13C_scale, d15N_scale, d34S_scale)
-
-Ecopike <- fread("Data/Mixing models/Pikemix-ecotypes_all.csv")
-
-Pikemix_recent <- Pikedata %>%
-  filter(Sample == "Recent")%>%
-  drop_na(Area, Genotype, d13C_muscle, d15N_muscle, d34S_muscle)%>%
-  transmute(Fish_ID, TL_cm, Sample,  
-            Area = case_when(Area %in% c("Sehrowbach", "Barthe", "Peene", "Beek", "Barthe/Peene") ~ "Tributary",
-                             Area %in% c("SB", "KB", "VB") ~ "WRB",
-                             Area %in% c("WB", "KJB", "BEG", "GJB") ~ "NRB",
-                             TRUE ~ Area), 
-            Genotype, 
-            d13C = d13C_muscle,
-            d15N = d15N_muscle,
-            d34S = d34S_muscle)%>%
+            Sample, Area, Genotype, d13C_muscle, d15N_muscle, d34S_muscle, d13C_scale, d15N_scale, d34S_scale) %>%
+  mutate(d13C = case_when(is.na(d13C_muscle) ~ d13C_scale,
+                          TRUE ~ d13C_muscle),
+         d15N = case_when(is.na(d15N_muscle) ~ d15N_scale,
+                          TRUE ~ d15N_muscle),
+         d34S = case_when(is.na(d34S_muscle) ~ d34S_scale,
+                          TRUE ~ d34S_muscle))%>%
+  drop_na(d34S) %>%
   distinct()
 
-fwrite(Pikemix_recent, "Data/Mixing models/Pikemix-recent.csv")
+Pikedata2 <- Pikedata %>% filter(is.na(Genotype) == FALSE)
 
-Pikemix_historic <- Pikedata %>%
-  filter(Sample == "Historic") %>%
-  filter(Area != "KD") %>%
-  drop_na(d13C_scale, d15N_scale, d34S_scale)%>%
-  transmute(Fish_ID, TL_cm, Sample, Area, Genotype, 
-            d13C = d13C_scale-3.2,
-            d15N = d15N_scale-0.5,
-            d34S = d34S_scale)%>%
-  drop_na(Genotype)%>%
-  distinct()
+#GAM or Linear?
 
-fwrite(Pikemix_historic, "Data/Mixing models/Pikemix-historic.csv")
+fit_lin_S <- brm(d34S ~ TL_cm + Genotype + Sample + (1|Area),
+  data = Pikedata,
+  family = gaussian(),
+  prior = c(prior(normal(0, 5), class = "b"),          # fixed effects
+            prior(student_t(3, 0, 5), class = "Intercept"),
+            prior(exponential(1), class = "sd"),       # random effect SDs
+            prior(exponential(1), class = "sigma")),     # residual SD
+  chains = 4, iter = 4000, warmup = 2000)
 
-Pikemix_historic_geno <- Pikemix_historic %>%
-  drop_na(Genotype)
+fit_lin_C <- update(fit_lin, formula. = d13C ~ TL_cm + Genotype + Sample + (1|Area), newdata = Pikedata)
+fit_lin_N <- update(fit_lin, formula. = d15N ~ TL_cm + Genotype + Sample + (1|Area), newdata = Pikedata)
 
-fwrite(Pikemix_historic_geno, "Data/Mixing models/Pikemix-historic_geno.csv")
+fit_gam_S <- brm(d34S ~ s(TL_cm, k = 10) + Genotype + Sample + (1|Area),
+  data = Pikedata,
+  family = gaussian(),
+  prior = c(prior(normal(0, 5), class = "b"),
+            prior(student_t(3, 0, 5), class = "Intercept"),
+            prior(exponential(1), class = "sd"),
+            prior(exponential(1), class = "sigma"),
+            prior(exponential(1), class = "sds")),       # smooth SD/penalty scale
+  chains = 4, iter = 4000, warmup = 2000)
 
-mix.filename.hist <- "Data/Pikemix-historic.csv"
-mix.filename.rec <- "Data/Pikemix-recent.csv"
-mix.filename.hist.geno <- "Data/Pikemix-historic_geno.csv"
-mix.test <- "Data/Pikemix-ecotypes_all.csv"
+fit_gam_C <- update(fit_gam_S, formula. = d13C ~ s(TL_cm, k = 10) + Genotype + Sample + (1|Area), newdata = Pikedata)
+fit_gam_N <- update(fit_gam_S, formula. = d15N ~ s(TL_cm, k = 10) + Genotype + Sample + (1|Area), newdata = Pikedata)
 
-#Prey fish
-Prey_historic <- Prey_all %>%
-  mutate(Sp = case_when(Species == "S.lucioperca" ~ NA, 
-                        Species == "B.joerkna" ~ NA,
-                        Species == "G.cernua" ~ NA, 
-                        Species == "Z.viviparus" ~ NA, 
-                        Species == "C.harengus" ~ "C.harengus_historic", 
-                        Species == "R.rutilus" & area %in% c("WRB", "BAT", "GB", "ST", "GJB", "NRB", "Grabow", "BEG", "S") ~ NA,
-                        Species == "R.rutilus" & !area %in% c("WRB", "BAT", "GB", "ST", "GJB", "NRB", "Grabow", "BEG", "S") ~ NA,
-                        Species == "P.fluviatilis" & area %in% c("WRB", "BAT", "GB", "ST", "GJB", "NRB", "Grabow", "BEG", "S") ~ NA,
-                        Species == "P.fluviatilis" & !area %in% c("WRB", "BAT", "GB", "ST", "GJB", "NRB", "Grabow", "BEG", "S") ~ NA,
-                        Species == "R. rutilus_historic" & area %in% c("WRB", "BAT", "GB", "ST", "GJB", "NRB", "Grabow", "BEG", "S") ~ "R.rutilus_BW_hist",
-                        Species == "R. rutilus_historic" & !area %in% c("WRB", "BAT", "GB", "ST", "GJB", "NRB", "Grabow", "BEG", "S") ~ "R.rutilus_FW_hist",
-                        Species == "P.fluviatilis_historic" & area %in% c("WRB", "BAT", "GB", "ST", "GJB", "NRB", "Grabow", "BEG", "S") ~ "P.fluviatilis_BW_hist",
-                        Species == "P.fluviatilis_historic" & !area %in% c("WRB", "BAT", "GB", "ST", "GJB", "NRB", "Grabow", "BEG", "S") ~ "P.fluviatilis_FW_hist",
-                        Species == "P. harengus_historic" ~ "C.harengus_historic"),
-         d13C = case_when(sample_type == "scale" ~ d13C - 3.2,
-                          TRUE ~ d13C),
-         d15N = case_when(sample_type == "scale" ~ d15N - 0.5,
-                          TRUE ~ d15N)) %>%
-  drop_na(Sp) %>%
-  distinct()
+loo_linS <- loo(fit_lin)
+loo_linC <- loo(fit_lin_C)
+loo_linN <- loo(fit_lin_N)
+loo_gamS <- loo(fit_gam_S)
+loo_gamC <- loo(fit_gam_C)
+loo_gamN <- loo(fit_gam_N)
 
-Prey_recent <- Prey_all %>%
-  mutate(Sp = case_when(Species == "S.lucioperca" ~ NA, 
-                        Species == "B.joerkna" ~ NA,
-                        Species == "G.cernua" ~ NA, 
-                        Species == "Z.viviparus" ~ NA, 
-                        Species == "C.harengus" ~ "C.harengus", 
-                        Species == "R.rutilus" & area %in% c("WRB", "BAT", "GB", "ST", "GJB", "NRB", "Grabow", "BEG", "S") ~ "R.rutilus_BW",
-                        Species == "R.rutilus" & !area %in% c("WRB", "BAT", "GB", "ST", "GJB", "NRB", "Grabow", "BEG", "S") ~ "R.rutilus_FW",
-                        Species == "P.fluviatilis" & area %in% c("WRB", "BAT", "GB", "ST", "GJB", "NRB", "Grabow", "BEG", "S") ~ "P.fluviatilis_BW",
-                        Species == "P.fluviatilis" & !area %in% c("WRB", "BAT", "GB", "ST", "GJB", "NRB", "Grabow", "BEG", "S") ~ "P.fluviatilis_BW",
-                        Species == "R. rutilus_historic" & area %in% c("WRB", "BAT", "GB", "ST", "GJB", "NRB", "Grabow", "BEG", "S") ~ NA,
-                        Species == "R. rutilus_historic" & !area %in% c("WRB", "BAT", "GB", "ST", "GJB", "NRB", "Grabow", "BEG", "S") ~ NA,
-                        Species == "P.fluviatilis_historic" & area %in% c("WRB", "BAT", "GB", "ST", "GJB", "NRB", "Grabow", "BEG", "S") ~ NA,
-                        Species == "P.fluviatilis_historic" & !area %in% c("WRB", "BAT", "GB", "ST", "GJB", "NRB", "Grabow", "BEG", "S") ~ NA,
-                        Species == "P. harengus_historic" ~ NA,
-                        Species == "N.melanostomus" ~ "N.melanostomus",
-                        Species == "P.flesus" ~ "P.flesus"),
-         d13C = case_when(sample_type == "scale" ~ d13C - 3.2,
-                          TRUE ~ d13C),
-         d15N = case_when(sample_type == "scale" ~ d15N - 0.5,
-                          TRUE ~ d15N)) %>%
-  drop_na(Sp) %>%
-  filter(sample_type != "scale") %>%
-  distinct()
+loo_compare(loo_linS, loo_gamS)
+#GAM significantly better, dlooic = 8.6
+loo_compare(loo_linC, loo_gamC)
+#GAM significantly better, dlooic = 14.0
+loo_compare(loo_linN, loo_gamN)
+#GAM not significantly better, dlooic = 0.8 (worse)
 
-m_by_sp_h <- aggregate(cbind(d15N, d13C, d34S) ~ Sp, data = Prey_historic, FUN = mean)
-m_by_sp_r <- aggregate(cbind(d15N, d13C, d34S) ~ Sp, data = Prey_recent, FUN = mean)
+fit_gamS_int <- brm(d34S ~ s(TL_cm, by = Sample, k = 10) + Sample + Genotype + (1|Area),
+  data = Pikedata,
+  family = gaussian(),
+  prior = c(prior(normal(0, 5), class = "b"),
+            prior(student_t(3, 0, 5), class = "Intercept"),
+            prior(exponential(1), class = "sd"),
+            prior(exponential(1), class = "sigma"),
+            prior(exponential(1), class = "sds")),       # smooth SD/penalty scale
+  chains = 4, iter = 4000, warmup = 2000)
 
-sd_by_sp_h <- aggregate(cbind(d15N, d13C, d34S) ~ Sp, data = Prey_historic, FUN = sd)
-sd_by_sp_r <- aggregate(cbind(d15N, d13C, d34S) ~ Sp, data = Prey_recent, FUN = sd)
+fit_gamC_int <- update(fit_gamS_int, formula. = d13C ~ s(TL_cm, by = Sample, k = 10) + Sample + Genotype + (1|Area), newdata = Pikedata)
+fit_linN_int <- update(fit_lin_N, formula. = d15N ~ TL_cm * Sample + Genotype + Sample + (1|Area), newdata = Pikedata)
 
-length_by_sp_h <- aggregate(cbind(d15N) ~ Sp, data = Prey_historic, FUN = length)
-length_by_sp_r <- aggregate(cbind(d15N) ~ Sp, data = Prey_recent, FUN = length)
+loo_intS <- loo(fit_gamS_int)
+loo_intC <- loo(fit_gamC_int)
+loo_intN <- loo(fit_linN_int)
 
-descriptive_h <- cbind(m_by_sp_h, sd_by_sp_h, length_by_sp_h)
-descriptive_h <- descriptive_h[c(-5,-9)]
-colnames(descriptive_h)<-c("Sp", "Meand15N", "Meand13C", "Meand34S", "SDd15N", "SDd13C", "SDd34S","n")
+loo_compare(loo_gamS, loo_intS)
+#Interaction highly significant, dlooic = 10.6
+loo_compare(loo_gamC, loo_intC)
+#Interaction not significant --> continue without, dlooic = 1.0 (worse)
+loo_compare(loo_linN, loo_intN)
+#Interaction weakly significant, dlooic = 3.0
 
-descriptive_r <- cbind(m_by_sp_r, sd_by_sp_r, length_by_sp_r)
-descriptive_r <- descriptive_r[c(-5,-9)]
-colnames(descriptive_r)<-c("Sp", "Meand15N", "Meand13C", "Meand34S", "SDd15N", "SDd13C", "SDd34S","n")
+fit_noSampS <- brm(d34S ~ s(TL_cm, by = Sample, k = 10) + Genotype + (1|Area),
+  data = Pikedata,
+  family = gaussian(),
+  prior = c(prior(normal(0, 5), class = "b"),
+            prior(student_t(3, 0, 5), class = "Intercept"),
+            prior(exponential(1), class = "sd"),
+            prior(exponential(1), class = "sigma"),
+            prior(exponential(1), class = "sds")),       # smooth SD/penalty scale
+  chains = 4, iter = 4000, warmup = 2000)
 
-fwrite(descriptive_r, "Data/Sources_recent.csv")
-fwrite(descriptive_h, "Data/Sources_historic.csv")
+fit_noSampC <- update(fit_noSampS, formula. = d13C ~ s(TL_cm, by = Sample, k = 10) + Genotype + (1|Area), newdata = Pikedata)
+fit_noSampN <- update(fit_linN_int, formula. = d15N ~ TL_cm * Sample + Genotype + (1|Area), newdata = Pikedata)
 
-#load mixture data
-mix_rec <- load_mix_data(filename=mix.filename.rec, 
-                          iso_names=c("d15N", "d13C", "d34S"),
-                          factors=c("Genotype"),
-                          fac_random=c(FALSE),
-                          fac_nested=c(FALSE),
-                          cont_effects="TL_cm")
+loo_noSampS <- loo(fit_noSampS)
+loo_noSampC <- loo(fit_noSampC)
+loo_noSampN <- loo(fit_noSampN)
 
-mix_hist <- load_mix_data(filename=mix.filename.hist, 
-                          iso_names=c("d15N", "d13C", "d34S"),
-                          factors=c("Genotype"),
-                          fac_random=c(FALSE),
-                          fac_nested=c(FALSE),
-                          cont_effects="TL_cm")
+loo_compare(loo_noSampS, loo_intS)
+#Sample is not significant dloo = 1.0
+loo_compare(loo_noSampC, loo_gamC)
+#sample is highly significant dloo = 33.6
+loo_compare(loo_noSampN, loo_intN)
+#sample is not significant dloo = 0.2
 
-# Prepare source data
-source.filename.rec <- "Data/Sources_recent.csv"
-source.filename.hist<- "Data/Sources_historic.csv"
+fit_noGenS <- update(fit_noSampS, formula. = d34S ~ s(TL_cm, by = Sample, k = 10) + (1|Area), newdata = Pikedata2)
+fit_noGenC <- update(fit_gam_C, formula. = d13C ~ s(TL_cm, k = 10) + Sample + (1|Area), newdata = Pikedata2)
+fit_noGenN <- update(fit_linN_int, formula. = d15N ~ TL_cm * Sample + Sample + (1|Area), newdata = Pikedata2)
 
-# # Load source data
-source.rec <- load_source_data(filename=source.filename.rec, source_factors=NULL,
-                               conc_dep=FALSE, data_type="means", mix_test)
+loo_noGenS <- loo(fit_noGenS)
+loo_noGenC <- loo(fit_noGenC)
+loo_noGenN <- loo(fit_noGenN)
 
-source.hist <- load_source_data(filename=source.filename.hist, source_factors=NULL,
-                                conc_dep=FALSE, data_type="means", mix_test)
+loo_compare(loo_noGenS, loo_noSampS)
+#Genotype not significant, improve dlooic by 1.0
+loo_compare(loo_noGenC, loo_gamC)
+#Genotype not significant, improve dlooic by 0.5
+loo_compare(loo_noGenN, loo_noSampN)
+#Genotype not significant, improve dlooic by 0.7
 
-discr.rec <- descriptive_r%>%
-  transmute(Sp=Sp,
-            Meand15N=2.9,
-            Meand13C=1.2,
-            Meand34S=-0.5,
-            SDd15N=0.32,
-            SDd13C=0.3,
-            SDd34S=0.2)
-
-discr.hist <- descriptive_h%>%
-  transmute(Sp=Sp,
-            Meand15N=2.9,
-            Meand13C=1.2,
-            Meand34S=-0.5,
-            SDd15N=0.32,
-            SDd13C=0.3,
-            SDd34S=0.2)
-
-fwrite(discr.rec, "Data/Discrimination-recent.csv")
-fwrite(discr.hist, "Data/Discrimination-historic.csv")
-
-discr.filename.rec <- "Data/Discrimination-recent.csv"
-discr.filename.hist <- "Data/Discrimination-historic.csv"
-
-discr.df.rec <- load_discr_data(filename=discr.filename.rec, mix_test)
-discr.df.hist <- load_discr_data(filename=discr.filename.hist, mix_test)
-
-plot_data(filename="isospace_plotn",
-          plot_save_pdf=FALSE,
-          plot_save_png=FALSE,
-          return_obj = T,
-          mix_rec,source.rec,discr.df.rec)
-
-plot_data(filename="isospace_plotn",
-          plot_save_pdf=FALSE,
-          plot_save_png=FALSE,
-          return_obj = T,
-          mix_hist,source.hist,discr.df.hist)
-
-# Write mixing models
-model1_filename <- "Data/Model_recent.txt"
-model2_filename <- "Data/Model_historic.txt"
-
-resid_err <- TRUE
-process_err <- TRUE
-
-#Save models
-write_JAGS_model(model1_filename, resid_err, process_err, mix_rec, source.hist)
-write_JAGS_model(model2_filename, resid_err, process_err, mix_hist, source.hist)
-
-#model with uninformative priors
-jags.pike.rec <- run_model(run="normal", mix_rec, source.rec, discr.df.rec, model1_filename, alpha.prior = 1)
-saveRDS(jags.pike.rec, "Data/Mixing.model-recent-geno-Length-normal.rds")
-
-jags.pike.hist <- run_model(run="normal", mix_hist, source.hist, discr.df.hist, model2_filename, alpha.prior = 1)
-saveRDS(jags.pike.hist, "Data/Mixing.model-historic-geno-Length-normal.rds")
-
-output_options <- list(summary_save = TRUE,                 
-                       summary_name = "summary_statistics", 
-                       sup_post = TRUE,                    
-                       plot_post_save_pdf = FALSE,           
-                       plot_post_name = "posterior_density",
-                       sup_pairs = TRUE,             
-                       plot_pairs_save_pdf = TRUE,    
-                       plot_pairs_name = "pairs_plot",
-                       sup_xy = TRUE,           
-                       plot_xy_save_pdf = TRUE,
-                       plot_xy_name = "xy_plot",
-                       gelman = TRUE,
-                       heidel = FALSE,  
-                       geweke = TRUE,   
-                       diag_save = TRUE,
-                       diag_name = "diagnostics",
-                       indiv_effect = FALSE,       
-                       plot_post_save_png = FALSE, 
-                       plot_pairs_save_png = FALSE,
-                       plot_xy_save_png = FALSE,
-                       diag_save_ggmcmc = FALSE,
-                       return_obj = TRUE)
-
-#Genotypes: 1 = brackish 1; 2 = brackish 2; 3 = freshwater/anadromous; 4 = brackish 3; 5 = freshwater
-
-g.post2 <- output_posteriors(jags.pike.hist, mix_test, source.hist, output_options)
-
-saveRDS(g.post2, "Data/Mixing models/Output/Mixing.model-historic-geno-Length-graphics.rds")
-
-g.post2$fac1[[3]]
+d34S_final <- update(fit_noSampS, formula. = d34S ~ s(TL_cm, by = Sample, k = 10) + (1|Area), newdata = Pikedata)
+d13C_final <- update(fit_gam_C, formula. = d13C ~ s(TL_cm, k = 10) + Sample + (1|Area), newdata = Pikedata)
+d15N_final <- update(fit_linN_int, formula. = d15N ~ TL_cm * Sample + (1|Area), newdata = Pikedata)
 ```
 
-```{r mixing model comparison, include=FALSE, eval=FALSE}
-rm(list = ls())
-
-#load models
-jags.pike.0 <- readRDS("Data/Mixing models/Output/Mixing.model-normal-run--NULL.rds")
-jags.pike.1 <- readRDS("Data/Mixing models/Output/Mixing.model-normal-run--TL.rds")
-jags.pike.2 <- readRDS("Data/Mixing models/Output/Mixing.model-normal-run--area-ecotype-TL.rds")
-jags.pike.3 <- readRDS("Data/Mixing models/Output/Mixing.model-normal-run--area-genotype-TL.rds")
-jags.pike.4 <- readRDS("Data/Mixing models/Output/Mixing.model-normal-run--ecotype-genotype-TL.rds")
-jags.pike.5 <- readRDS("Data/Mixing models/Output/Mixing.model-normal-run--ecotype-TL.rds")
-jags.pike.6 <- readRDS("Data/Mixing models/Output/Mixing.model-normal-run--genotype-TL.rds")
-jags.pike.7 <- readRDS("Data/Mixing models/Output/Mixing.model-normal-run--area-TL.rds")
-
-#create model list
-mcomp <- list(jags.pike.0, jags.pike.1, jags.pike.2, jags.pike.3, jags.pike.4, jags.pike.5, jags.pike.6, jags.pike.7)
-names(mcomp) <- c("NULL", "body length", "area|phenotype|body length", "area|genotype|body length", "phenotype|genotype|body length",
-                  "phenotype|body length", "genotype|body length", "area|body length")
-
-compare_models(mcomp, loo = TRUE)
-
-#plot continuous variables
-source.filename <- "Data/Mixing models/Sources.csv"
-mix.filename <- "Data/Mixing models/Pikemix-ecotypes.csv"
-discr.filename <- "Data/Mixing models/Discrimination.csv"
-
-# Load mixture data
-#length
-mix1 <- load_mix_data(filename=mix.filename, 
-                     iso_names=c("d15N", "d13C", "d34S"),
-                     factors=c("genotype"),
-                     fac_random=c(FALSE),
-                     fac_nested=c(FALSE),
-                     cont_effects=c("Length"))
-
-
-# Load source data
-source<- load_source_data(filename=source.filename, source_factors=NULL,
-                          conc_dep=FALSE, data_type="means", mix1)
-
-#specify output
-output_options <- list(summary_save = TRUE,                 
-                       summary_name = "summary_statistics", 
-                       sup_post = TRUE,                    
-                       plot_post_save_pdf = FALSE,           
-                       plot_post_name = "posterior_density",
-                       sup_pairs = TRUE,             
-                       plot_pairs_save_pdf = TRUE,    
-                       plot_pairs_name = "pairs_plot",
-                       sup_xy = TRUE,           
-                       plot_xy_save_pdf = TRUE,
-                       plot_xy_name = "xy_plot",
-                       gelman = TRUE,
-                       heidel = FALSE,  
-                       geweke = TRUE,   
-                       diag_save = TRUE,
-                       diag_name = "diagnostics",
-                       indiv_effect = FALSE,       
-                       plot_post_save_png = FALSE, 
-                       plot_pairs_save_png = FALSE,
-                       plot_xy_save_png = FALSE,
-                       diag_save_ggmcmc = FALSE,
-                       return_obj = TRUE)
-
-g.post2 <- output_posteriors(jags.pike.6, mix1, source, output_options)
-
-saveRDS(g.post2, "Data/Mixing models/Output/graphics.rds")
-```
-
-```{r mixing model graphics genotype level, include=FALSE, eval=FALSE}
-rm(list = ls())
-
-g.post2 <- readRDS("Data/Mixing models/Output/Mixing.model-historic-geno-Length-graphics.rds")
-
-#Genotypes: 1 = brackish 1; 2 = brackish 2; 3 = freshwater/anadromous; 4 = brackish 3; 5 = freshwater
-
-Anadrom <- g.post2$fac1[[4]]
-freshwater <- g.post2$fac1[[6]]
-brackish1 <- g.post2$fac1[[2]]
-brackish2 <- g.post2$fac1[[3]]
-brackish3 <- g.post2$fac1[[5]]
-
-pl.theme <- theme(panel.grid.major = element_line(color = "grey", linetype = "solid", size = 0.5),
-                  panel.grid.minor = element_line(color = "lightgrey", linetype = "dashed", size = 0.5),
-                  legend.background = element_blank(),
-                  legend.box.background = element_blank(),
-                  axis.line = element_line(linewidth = .5, colour = "black", linetype = 1),
-                  axis.ticks = element_line(linewidth = .5, colour = "black"),
-                  axis.text = element_text(size = 10, colour = "black"),
-                  axis.text.y = element_text(size = 10, colour = "black"),
-                  axis.title.x = element_blank(),
-                  axis.title.y = element_blank(),
-                  legend.position = "bottom",
-                  legend.text = element_text(size = 10),
-                  legend.title = element_text(size = 10),
-                  legend.key.size = unit(.8,"line"),
-                  plot.title = element_text(size = 10, colour = "black"))
-
-pl.color <- scale_color_manual(breaks = c("Marine", "Lagoon", "Freshwater"),
-                              values = c("#29B6F6", "#00796B","#B71C1C"),
-                              labels = c("Marine resources", "Lagoon resources", "Freshwater resources"))
-pl.fill <- scale_fill_manual(breaks = c("Marine", "Lagoon", "Freshwater"),
-                              values = c("#29B6F6", "#00796B","#B71C1C"),
-                              labels = c("Marine resources", "Lagoon resources", "Freshwater resources"))
-
-scalex <- scale_x_continuous(breaks = c(0, 0.25, 0.50, 0.75, 1.00),
-                   labels = c("0", "25", "50", "75", "100"),
-                   limits = c(0,1))
-
-scaley <- scale_y_continuous(breaks = c(0, 0.25, 0.5, 0.75, 1),
-                             labels = c("0.00", "0.25", "0.50", "0.75", "1.00"))
-
-FW_plot <- freshwater+
-  labs(title = "Freshwater genotype", fill = "source", color = "source")+
-  pl.theme+
-  pl.color+
-  pl.fill+
-  scalex+
-  scaley+
-  guides(color = guide_legend(ncol = 3, nrow = 1))
-
-Ana_plot <- Anadrom+
-  labs(title = "Anadromous genotype", fill = "source", color = "source")+
-  pl.theme+
-  pl.color+
-  pl.fill+
-  scalex+
-  scaley+
-  guides(color = guide_legend(ncol = 3, nrow = 1))
-
-brackish1 <- brackish1+
-  labs(title = "Brackish genotype 1", fill = "source", color = "source")+
-  pl.theme+
-  pl.color+
-  pl.fill+
-  scalex+
-  scaley+
-  guides(color = guide_legend(ncol = 3, nrow = 1))
-
-brackish2 <- brackish2+
-  labs(title = "Brackish genotype 2", fill = "source", color = "source")+
-  pl.theme+
-  pl.color+
-  pl.fill+
-  scalex+
-  scaley+
-  guides(color = guide_legend(ncol = 3, nrow = 1))
-
-brackish3 <- brackish3+
-  labs(title = "Brackish genotype 3", fill = "source", color = "source")+
-  pl.theme+
-  pl.color+
-  pl.fill+
-  scalex+
-  scaley+
-  guides(color = guide_legend(ncol = 3, nrow = 1))
-
-Allplot <- ggarrange(FW_plot, Ana_plot, brackish1, brackish2, brackish3, nrow = 2, ncol = 3, 
-                     common.legend = TRUE)
-Allplot2 <- annotate_figure(Allplot, left = text_grob("posterior density", rot = 90, size = 12), 
-                            bottom = text_grob("diet proportion (%)", size = 12))
-
-ggsave("Figures/pike-diet-historic-genotypes.png", Allplot2, width = 15, height = 15, units = "cm", dpi = 300, bg = "white")
-```
-
-```{r graphics mixing models length, include=FALSE, eval=FALSE}
-rm(list = ls())
-
-g.post2 <- readRDS("Data/Mixing models/Output/Mixing.model-historic-geno-Length-graphics.rds")
-pike <- fread("Data/Mixing models/Pikemix-historic.csv")
-
-#Genotypes: 1 = brackish 1; 2 = brackish 2; 3 = freshwater/anadromous; 4 = brackish 3; 5 = freshwater
-
-Ana_cont_all <- g.post2$cont[[4]]
-Ana_cont <- Ana_cont_all[[1]]
-FW_cont_all <- g.post2$cont[[6]]
-FW_cont <- FW_cont_all[[1]]
-brackish1_cont_all <- g.post2$cont[[2]]
-brackish1_cont <- brackish1_cont_all[[1]]
-brackish2_cont_all <- g.post2$cont[[3]]
-brackish2_cont <- brackish2_cont_all[[1]]
-brackish3_cont_all <- g.post2$cont[[5]]
-brackish3_cont <- brackish3_cont_all[[1]]
-
-pl.theme <- theme(panel.grid.major = element_line(color = "grey", linetype = "solid"),
-                  panel.grid.minor = element_line(color = "lightgrey", linetype = "dashed"),
-                  legend.background = element_blank(),
-                  legend.box.background = element_blank(),
-                  axis.line = element_line(linewidth = .5, colour = "black", linetype = 1),
-                  axis.ticks = element_line(linewidth = .5, colour = "black"),
-                  axis.text = element_text(size = 10, colour = "black"),
-                  axis.text.y = element_text(size = 10, colour = "black"),
-                  axis.title.x = element_blank(),
-                  axis.title.y = element_blank(),
-                  legend.position = "bottom",
-                  legend.text = element_text(size = 10),
-                  legend.title = element_text(size = 10),
-                  legend.key.size = unit(.8,"line"),
-                  plot.title = element_text(size = 10, colour = "black"))
-
-pl.color <- scale_color_manual(breaks = c("Marine", "Lagoon", "Freshwater"),
-                              values = c("#29B6F6", "#00796B","#B71C1C"),
-                              labels = c("Marine resources", "Lagoon resources", "Freshwater resources"))
-pl.fill <- scale_fill_manual(breaks = c("Marine", "Lagoon", "Freshwater"),
-                              values = c("#29B6F6", "#00796B","#B71C1C"),
-                              labels = c("Marine resources", "Lagoon resources", "Freshwater resources"))
-
-scaley2 <- scale_y_continuous(breaks = c(0, 0.25, 0.5, 0.75, 1),
-                             labels = c("0", "25", "50", "75", "100"))
-
-Ana.plot <- Ana_cont+
-  labs(title = "Anadromous genotype", fill = "source", color = "source")+
-  pl.theme+
-  pl.color+
-  pl.fill+
-  scale_x_continuous(breaks = seq(0, 100, 10),
-                     labels = seq(0,100,10),
-                     limits = c(min(pike[pike$Genotype==3,]$TL_cm),
-                              max(pike[pike$Genotype==3,]$TL_cm)))+
-  scaley2
-
-FW.plot <- FW_cont+
-  labs(title = "Freshwater genotype", fill = "source", color = "source")+
-  pl.theme+
-  pl.color+
-  pl.fill+
-  scale_x_continuous(breaks = seq(0, 100, 10),
-                     labels = seq(0,100,10),
-                     limits = c(min(pike[pike$Genotype==5,]$TL_cm),
-                              max(pike[pike$Genotype==5,]$TL_cm)))+
-  scaley2
-
-brackish1_plot <- brackish1_cont+
-  labs(title = "Brackish genotype 1", fill = "source", color = "source")+
-  pl.theme+
-  pl.color+
-  pl.fill+
-  scale_x_continuous(breaks = seq(0, 120, 10),
-                     labels = seq(0,120,10),
-                     limits = c(min(pike[pike$Genotype==1,]$TL_cm),
-                              max(pike[pike$Genotype==1,]$TL_cm)))+
-  scaley2
-
-brackish2_plot <- brackish2_cont+
-  labs(title = "Brackish genotype 2", fill = "source", color = "source")+
-  pl.theme+
-  pl.color+
-  pl.fill+
-  scale_x_continuous(breaks = seq(0, 120, 10),
-                     labels = seq(0,120,10),
-                     limits = c(min(pike[pike$Genotype==2,]$TL_cm),
-                              max(pike[pike$Genotype==2,]$TL_cm)))+
-  scaley2
-
-brackish3_plot <- brackish3_cont+
-  labs(title = "Brackish genotype 2", fill = "source", color = "source")+
-  pl.theme+
-  pl.color+
-  pl.fill+
-  scale_x_continuous(breaks = seq(0, 120, 10),
-                     labels = seq(0,120,10),
-                     limits = c(min(pike[pike$Genotype==4,]$TL_cm),
-                              max(pike[pike$Genotype==4,]$TL_cm)))+
-  scaley2
-
-Allplot <- ggarrange(Ana.plot, FW.plot, brackish1_plot, brackish2_plot, brackish3_plot, nrow = 2, ncol = 3, 
-                     common.legend = T, legend = "top")
-Allplot2 <- annotate_figure(Allplot, left = text_grob("diet proportion (%)", rot = 90, size = 12), 
-                            bottom = text_grob("total length (cm)", size = 12))
-
-ggsave("Figures/length-diet-historic-genotypes.png", Allplot2, width = 15, height = 15, units = "cm", dpi = 300, bg = "white")
-```
-
-```{r graphics mixing models population level, include=FALSE, eval=FALSE}
-rm(list = ls())
-
-# Create diagnostics, summary statistics, and posterior plots
-jags.pike <- readRDS("Data/Mixing models/Output/Mixing.model-historic-geno-Length-normal.rds")
-
-Pike2 <- fread("Data/Mixing models/Pikemix-historic.csv")
-
-source.filename <- "Data/Mixing models/Sources_historic.csv"
-mix.filename <- "Data/Mixing models/Pikemix-historic.csv"
-
-# Load mixture data
-mix <- load_mix_data(filename=mix.filename, 
-                     iso_names=c("d15N", "d13C", "d34S"),
-                     factors="Genotype",
-                     fac_random=FALSE,
-                     fac_nested=FALSE,
-                     cont_effects="TL_cm")
-
-# Load source data
-source<- load_source_data(filename=source.filename, source_factors=NULL,
-                          conc_dep=FALSE, data_type="means", mix)
-
-global.contrib.p <- data.frame(median = jags.pike$BUGSoutput$median$p.fac1, Genotype=c(1, 2, 3, 4, 5, NA))
-global.contrib.sd <- data.frame(sd = jags.pike$BUGSoutput$sd$p.fac1, Genotype=c(1, 2, 3, 4, 5, NA))
-
-names(global.contrib.p) <- c(paste0("p.", source[["source_names"]]),"Genotype")
-names(global.contrib.sd) <- c(paste0("sd.", source[["source_names"]]),"Genotype")
-
-sum <- rowSums(global.contrib.p[,1:3])
-
-global.contrib.p2 <- global.contrib.p%>%
-  pivot_longer(cols = p.freshwater:p.marine,names_to = "species", values_to = "median")%>%
-  transmute(ecotype=fct_relevel(ecotype,
-                                "freshwater resident",
-                                "anadromous",
-                                "cross-habitat",
-                                "brackish resident"),
-            species=sub("p.","",species),
-            median=median)
-global.contrib.sd2 <- global.contrib.sd%>%
-  pivot_longer(cols = sd.freshwater:sd.marine,names_to = "species", values_to = "sd")%>%
-  transmute(ecotype=fct_relevel(ecotype,
-                                "freshwater resident",
-                                "anadromous",
-                                "cross-habitat",
-                                "brackish resident"),
-            species=sub("sd.","",species),
-            sd=sd)
-
-global.contrib2 <- global.contrib.p2%>%inner_join(global.contrib.sd2, by = c("species", "ecotype"))
-
-
-indiv.contrib <- data.frame(contr=jags.pike$BUGSoutput$mean$p.ind)
-indiv.sd <- data.frame(sd=jags.pike$BUGSoutput$sd$p.ind)
-names(indiv.contrib) <- paste0("p.",source[["source_names"]])
-names(indiv.sd) <- paste0("sd.",source[["source_names"]])
-indiv.contrib$ID <- Pike2$Fish_ID
-indiv.sd$ID <- Pike2$Fish_ID
-
-contrib.pike <- indiv.contrib%>%
-  inner_join(indiv.sd, by = "ID")
-
-Pike.contrib <- Pike2 %>%
-  inner_join(contrib.pike, by = "ID")%>%
-  transmute(ID=ID,
-            capt_date,
-            TL_mm = Length,
-            weight_g=weight_g,
-            area=area,
-            Long=Long,
-            Lat=Lat,
-            d15N=d15N,
-            d13C=d13C,
-            d34S=d34S,
-            CN_ratio=CN_ratio,
-            halflife=halflife,
-            p.marine=p.marine,
-            sd.marine=sd.marine,
-            p.lagoon=p.lagoon,
-            sd.lagoon=sd.lagoon,
-            p.freshwater=p.freshwater,
-            sd.freshwater=sd.freshwater)
-
-fwrite(Pike.contrib, "Data/Mixing models/Pike_individual_diet.csv")
-
-pl.theme <- theme(panel.grid.major = element_line(),
-                  legend.background = element_blank(),
-                  legend.box.background = element_blank(),
-                  axis.line = element_line(linewidth = .5, colour = "black", linetype = 1),
-                  axis.ticks = element_line(linewidth = .5, colour = "black"),
-                  axis.text = element_text(size = 12, colour = "black"),
-                  axis.text.y = element_text(size = 12, colour = "black"),
-                  axis.title.x = element_text(size = 12, colour = "black"),
-                  axis.title.y = element_text(size = 12, colour = "black"),
-                  legend.text = element_text(size = 12),
-                  legend.title = element_text(size = 12),
-                  legend.key.size = unit(.8,"line"),
-                  plot.title = element_text(size = 12, colour = "black"))
-
-Pike.length <- ggplot(Pike.contrib)+
-  geom_smooth(aes(TL_mm, p.marine, color="marine", fill="marine"))+
-  geom_smooth(aes(TL_mm, p.freshwater, color="freshwater", fill="freshwater"))+
-  geom_smooth(aes(TL_mm, p.lagoon, color="lagoon", fill="lagoon"))+
-  scale_color_manual(name = "energy source",
-                     breaks = c("marine", "lagoon", "freshwater"),
-                     values = c("#29B6F6", "#00796B","#B71C1C"),
-                     labels = c("marine food web", "lagoon food web", "freshwater food web"))+
-  scale_fill_manual(name = "energy source",
-                     breaks = c("marine", "lagoon", "freshwater"),
-                     values = c("#29B6F6", "#00796B","#B71C1C"),
-                     labels = c("marine food web", "lagoon food web", "freshwater food web"))+
-  scale_y_continuous(expand = c(0,0),
-                     breaks = c(0,0.25,0.5,0.75,1), labels = c("0", "25", "50", "75", "100"))+
-  scale_x_continuous(expand = c(0,0),
-                     limits = c(min(Pike.contrib$TL_mm),max(Pike.contrib$TL_mm)),
-                     breaks = c(200,300, 400, 500, 600, 700, 800, 900, 1000, 1100, 1200, 1300), 
-                     labels = c("20","30","40","50","60","70","80","90","100","110","120","130"))+
-  labs(x="total length (cm)", y="pike diet proportion (%)")+
-  coord_cartesian(ylim = c(0,1))+
-  theme_classic()+
-  pl.theme
-```
-
-
-```{r isofigures}
+```{r isotope figures, include=FALSE, eval=FALSE}
 rm(list = ls())
 
 Pikemaster <- fread("Data/Pike/Pikemaster.csv")
+Prey_all <- fread("Data/Prey/Prey-data-all.csv")
 
-Pike_recent <- Pikemaster %>%
-  filter(Sample == "Recent") %>%
-  transmute(Fish_ID, TL_mm, Sample, Age, Area, Genotype,
-            d15N = d15N_muscle,
-            d13C = d13C_muscle,
-            d34S = d34S_muscle) %>%
-  drop_na(d15N) %>%
+Pikedata <- Pikemaster%>%
+  transmute(Fish_ID, 
+            TL_cm = TL_mm/10, 
+            Sample, Area, Genotype, d13C_muscle, d15N_muscle, d34S_muscle, d13C_scale, d15N_scale, d34S_scale) %>%
+  mutate(d13C = case_when(is.na(d13C_muscle) ~ d13C_scale,
+                          TRUE ~ d13C_muscle),
+         d15N = case_when(is.na(d15N_muscle) ~ d15N_scale,
+                          TRUE ~ d15N_muscle),
+         d34S = case_when(is.na(d34S_muscle) ~ d34S_scale,
+                          TRUE ~ d34S_muscle))%>%
+  drop_na(d34S) %>%
   distinct()
 
-Pike_historic <- Pikemaster %>%
-  filter(Sample == "Historic") %>%
-  transmute(Fish_ID, TL_mm, Sample, Age, Area, Genotype,
-            d15N = d15N_scale - 0.5,
-            d13C = d13C_scale - 3.2,
-            d34S = d34S_scale) %>%
-  drop_na(d15N) %>%
-  distinct()
+plot_theme <- theme(panel.grid.major = element_line(linewidth = .3, colour = "lightgrey"),
+        legend.position = "none",
+        legend.background = element_blank(),
+        legend.box.background = element_rect(),
+        axis.line = element_line(linewidth = 1, colour = "black", linetype = 1),
+        axis.ticks = element_line(size = 1, colour = "black"),
+        axis.text = element_text(size = 10, colour = "black"),
+        axis.title.y = element_text(size = 10, colour = "black"),
+        axis.title.x = element_blank(),
+        legend.text = element_text(size = 15, colour = "black"),
+        legend.title = element_text(size = 15, colour = "black"),
+        legend.key.size = unit(1,"line"))
 
-recentN <- ggplot(Pike_recent, aes(TL_mm, d15N)) +
-  geom_point() +
-  geom_smooth(method = "lm") +
-  theme_bw()
+Carb <- ggplot(Pikedata, aes(TL_cm, d13C, colour = Sample))+
+  geom_point(size = .5)+
+  geom_smooth(method = "gam")+
+  scale_color_manual(breaks = c("Historic","Recent"),
+                    values = c("#00BFB2","#C5D86D"),
+                    labels = c("Historic (N = 130)", "Recent (N = 519)"))+
+  labs(x = "Total length (cm)", y=expression(delta^"13"~"C(\u2030)"), fill="Sample")+
+  theme_classic()+
+  plot_theme
 
-historicN <- ggplot(Pike_historic, aes(TL_mm, d15N)) +
-  geom_point() +
-  geom_smooth(method = "lm") +
-  theme_bw()
+Nitro <- ggplot(Pikedata, aes(TL_cm, d15N, colour = Sample))+
+  geom_point(size = .5)+
+  geom_smooth(method = "lm")+
+  scale_color_manual(breaks = c("Historic","Recent"),
+                    values = c("#00BFB2","#C5D86D"),
+                    labels = c("Historic (N = 130)", "Recent (N = 519)"))+
+  labs(x = "Total length (cm)", y=expression(delta^"15"~"N(\u2030)"), fill="Sample")+
+  theme_classic()+
+  plot_theme
 
-ggsave("Figures/RecentN-pike.png", recentN, width = 15, height = 15, units = "cm", dpi = 300, bg = "white")
+Sulf <- ggplot(Pikedata, aes(TL_cm, d34S, colour = Sample))+
+  geom_point(size = .5)+
+  geom_smooth(method = "gam")+
+  scale_color_manual(breaks = c("Historic","Recent"),
+                    values = c("#00BFB2","#C5D86D"),
+                    labels = c("Historic (N = 130)", "Recent (N = 519)"))+
+  labs(x = "Total length (cm)", y=expression(delta^"34"~"S(\u2030)"), fill="Sample")+
+  theme_classic()+
+  plot_theme
 
-ggsave("Figures/HistoricN-pike.png", historicN, width = 15, height = 15, units = "cm", dpi = 300, bg = "white")
+Isos <- ggarrange(Carb, Nitro, Sulf, nrow = 1, common.legend = TRUE)
 
+Isoplots <- annotate_figure(Isos, bottom = text_grob("Total length (cm)"))
+
+ggsave("Figures/Sulfur-vs-TL_historic-vs-Recent.png", Isoplots, width = 32, height = 10, units = "cm", dpi = 600, bg = "white")
 ```
 
 # Population model
