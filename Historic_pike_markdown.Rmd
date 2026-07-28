@@ -16,6 +16,7 @@ library(tidyverse)
 library(ggplot2)
 library(ggpubr)
 library(ggrepel)
+library(khroma)
 library(RColorBrewer)
 library(flextable)
 library(MixSIAR)
@@ -23,6 +24,9 @@ library(plyr)
 library(FSA)
 library(terra)
 library(maps)
+library(emmeans)
+library(segmented)
+library(strucchange)
 library(brms)
 library(rstan)
 options(mc.cores = parallel::detectCores())
@@ -622,6 +626,12 @@ Histo_iso_add <- Histopike %>%
 Pikemaster5 <- plyr::rbind.fill(Pikemaster4, Histo_iso_add)
 
 #fwrite(Pikemaster5, "Data/Pike/Pikemaster.csv")
+
+Pikemaster6 <- Pikemaster %>%
+  transmute(Fish_ID, Sample, Area)%>%
+  distinct()
+
+table(Pikemaster6[Pikemaster6$Sample == "Recent",]$Area)
 ```
 
 # Growth analysis
@@ -669,88 +679,56 @@ Growthtable <- Pikemaster3 %>%
                                 Sample == "Historic-f" ~ 3,
                                 Sample == "Historic-m" ~ 4,
                                 TRUE ~ 5)) %>%
-  filter(is.na(Age) != TRUE) %>%
+  filter(is.na(Age) != TRUE, Sample != "Freshwater") %>%
   distinct()
 
-Meansize_hist70s <- Growthtable %>%
-  filter(year(Capt_date) < 1980) %>%
+Meansize_hist <- Growthtable %>%
+  filter(year(Capt_date) < 2000 & Age <= 10) %>%
   group_by(Age) %>%
   reframe(
-    Decade = "1970",
+    Decade = "Historic",
     Mean_length = mean(Length_LI, na.rm = TRUE),
     SDlength = sd(Length_LI, na.rm = TRUE),
     N = n())
 
-Meansize_hist80s <- Growthtable %>%
-  filter(year(Capt_date) < 2000) %>%
+Meansize_rec <- Growthtable %>%
+  filter(year(Capt_date) > 2000 & Age <= 10) %>%
   group_by(Age) %>%
   reframe(
-    Decade = "1980",
+    Decade = "Recent",
     Mean_length = mean(Length_LI, na.rm = TRUE),
     SDlength = sd(Length_LI, na.rm = TRUE),
     N = n())
 
-Meansize_hist2000s <- Growthtable %>%
-  filter(year(Capt_date) > 2000) %>%
-  group_by(Age) %>%
-  reframe(
-    Decade = "2020",
-    Mean_length = mean(Length_LI, na.rm = TRUE),
-    SDlength = sd(Length_LI, na.rm = TRUE),
-    N = n())
+Mean_size_at_age <- rbind(Meansize_hist, Meansize_rec)
 
-Mean_size_at_age <- rbind(Meansize_hist70s, Meansize_hist80s, Meansize_hist2000s)
-
-SizeByDecade_wide <- Mean_size_at_age %>%
+df <- Mean_size_at_age %>%
   pivot_wider(names_from = Decade,
               values_from = c(Mean_length, SDlength, N),
               names_glue = "{.value}_{Decade}")
 
-flextable(SizeByDecade_wide) %>%
-  colformat_double(j = 2:3, digits = 2) %>%
-  autofit()
+df_ft <- data.frame(Age = df$Age,
+                    Historic_mean_sd = sprintf("%.1f ± %.1f", df$Mean_length_Historic/10, df$SDlength_Historic/10),
+                    Historic_n = df$N_Historic,
+                    Recent_mean_sd = sprintf("%.1f ± %.1f", df$Mean_length_Recent/10, df$SDlength_Recent/10),
+                    Recent_n = df$N_Recent)
 
-Meanage <- Growthtable %>%
-  mutate(Length_LI = case_when(Length_LI == 0 ~ TL_mm,
-                                 TRUE ~ Length_LI),
-         SK = case_when(Length_LI > 100 & Length_LI < 200 ~ "10 - 20 cm",
-                        Length_LI > 200 & Length_LI < 300 ~ "20 - 30 cm",
-                        Length_LI > 300 & Length_LI < 400 ~ "30 - 40 cm",
-                        Length_LI > 400 & Length_LI < 500 ~ "40 - 50 cm",
-                        TRUE ~ "50 cm and larger")) %>%
-  transmute(SK, Age)
+ft <- flextable(df_ft) %>%
+  set_header_labels(Age = "Age",
+                    Historic_mean_sd = "Mean length ± SD",
+                    Historic_n = "n",
+                    Recent_mean_sd = "Mean length ± SD",
+                    Recent_n = "n") %>%
+  add_header_row(values = c("", "Historic", "Recent"),
+                 colwidths = c(1, 2, 2)) %>%
+  flextable::align(j = 2:5, align = "center", part = "all") %>%
+  flextable::bold(part = "header") %>%
+  flextable::theme_booktabs() %>%
+  flextable::autofit()
 
-Add <- data.frame(SK = c("40 - 50 cm", "40 - 50 cm", "40 - 50 cm", "30 - 40 cm", "30 - 40 cm"), Age = rep(1,5))
+ft
 
-Meanage <- rbind(Meanage, Add)
-
-Ages <- ggplot(Meanage, aes(SK, fill = as.factor(Age)))+
-  geom_bar(position = "fill")+
-  scale_fill_viridis_d()+
-  theme_classic() +
-  labs(x = "Sizeclass (cm)", y = "proportion")+
-  theme(axis.text.x = element_text(size = 15, colour = "black", angle = 90),
-        axis.text.y = element_text(size = 15, colour = "black"),
-        axis.title.x = element_text(size = 15, colour = "black"),
-        axis.title.y = element_text(size = 15, colour = "black"),
-        legend.text = element_text(size = 15),
-        legend.title = element_text(size = 15, face = "bold"))
-
-#ggsave("Figures/Ages_at_sizeclass.png", height = 15, width = 15, units = "cm", bg = "white", dpi = 300)
-
-#Sample sizes
-length(Growthtable[Growthtable$Sample_bin == 1,]$Fish_ID)
-length(Growthtable[Growthtable$Sample_bin == 2,]$Fish_ID)
-length(Growthtable[Growthtable$Sample_bin == 3,]$Fish_ID)
-length(Growthtable[Growthtable$Sample_bin == 4,]$Fish_ID)
-length(Growthtable[Growthtable$Sample_bin == 5,]$Fish_ID)
-
-#Observation: Anadromous don´t get old
-max(Pikemaster3[Pikemaster3$Sample == "Historic-f" & Pikemaster3$Genotype == 3,]$Age)
-max(Pikemaster3[Pikemaster3$Sample == "Historic-f" & Pikemaster3$Genotype == 3,]$TL_mm)
-max(Pikemaster3[Pikemaster3$Sample == "Recent-f" & Pikemaster3$Genotype == 3,]$Age)
-max(Pikemaster3[Pikemaster3$Sample == "Recent-f" & Pikemaster3$Genotype == 3,]$TL_mm)
-
+save_as_docx(ft, path = "Figures/Age-at-length_table.docx")
 ```
 
 ```{r Von Bertalanffy historic vs recent, include=FALSE, eval=FALSE}
@@ -907,7 +885,7 @@ Growthtable <- Pikemaster %>%
                                 Genotype == 4 ~ 4,
                                 TRUE ~ 0)) %>%
   distinct()%>%
-  drop_na(Genotype)%>%
+  drop_na(Genotype, Age)%>%
   filter(Genotype != 0)
 
 priors <- fread("Data/Pike/Priors_pike.csv")
@@ -969,7 +947,7 @@ Growthtable2 <- Pikemaster %>%
                                 Genotype == 4 ~ 4,
                                 TRUE ~ 0)) %>%
   distinct()%>%
-  drop_na(Genotype)%>%
+  drop_na(Genotype, Age)%>%
   filter(Genotype != 0)
 
 table(Growthtable2$Genotype)
@@ -1137,6 +1115,11 @@ Growthtable1 <- Pikemaster_sex %>%
                                 TRUE ~ 5))) %>%
   distinct()
 
+length(unique(Growthtable1[Growthtable1$Sample == "Recent-f",]$Fish_ID))
+length(unique(Growthtable1[Growthtable1$Sample == "Recent-m",]$Fish_ID))
+length(unique(Growthtable1[Growthtable1$Sample == "Historic-f",]$Fish_ID))
+length(unique(Growthtable1[Growthtable1$Sample == "Historic-m",]$Fish_ID))
+
 #Stats
 p = c("LInf_area", "tZero_area", "k_area")
 
@@ -1180,18 +1163,18 @@ samples$area_id <- as.factor(samples$area_id)
 #plotting
 
 pl_theme =	theme_classic() +
-  theme(panel.grid.major = element_line(),
+  theme(panel.grid.major = element_line(linewidth = 0.5, colour = "lightgrey"),
         legend.box.background = element_rect(),
         axis.line = element_line(linewidth = .5, colour = "black", linetype = 1),
         axis.ticks = element_line(linewidth = .5, colour = "black"),
-        axis.text.x = element_text(size = 14, colour = "black"),
-        axis.text.y = element_text(size = 14, colour = "black"),
-        axis.title.x = element_text(size = 14, colour = "black"),
-        axis.title.y = element_text(size = 14, colour = "black"),
-        legend.text = element_text(size = 14),
-        legend.title = element_text(size = 14, face = "bold"),
-        legend.position = c(0.8,0.2),
-        plot.title = element_text(size = 14, colour = "black"))
+        axis.text.x = element_text(size = 10, colour = "black"),
+        axis.text.y = element_text(size = 10, colour = "black"),
+        axis.title.x = element_text(size = 10, colour = "black"),
+        axis.title.y = element_text(size = 10, colour = "black"),
+        legend.text = element_text(size = 8),
+        legend.title = element_text(size = 8, face = "bold"),
+        legend.position = c(0.7,0.2),
+        plot.title = element_text(size = 12, colour = "black"))
 
 Curve_pop_complex <- ggplot(data = samples[samples$area_id != 5,]) + #exclude freshwater
   geom_ribbon(aes(x = Agei, ymin = lower, ymax = upper, fill = area_id), alpha = 0.5) +
@@ -1199,12 +1182,13 @@ Curve_pop_complex <- ggplot(data = samples[samples$area_id != 5,]) + #exclude fr
   geom_point(data = Growthtable1, aes(x = Age, y = Length_LI/10, color = Sample_bin), size = 1, alpha = .9) + 
   scale_x_continuous(breaks = seq(1,15,1), labels = c("1","","3","","5","","7","","9","","11","","13","","15"))+
   scale_color_manual(breaks = c(1,2,3,4), values = c("#004643", "#C5D86D", "#00BFB2", "#F1C40F", "#AF3800"), 
-                     labels = c("Recent female", "Recent male", "Historic female", "Historic male"))+
+                     labels = c("Recent female (n = 400)", "Recent male (n = 362)", "Historic female (n = 338)", "Historic male (n = 197)"))+
   scale_fill_manual(breaks = c(1,2,3,4), values = c("#004643", "#C5D86D", "#00BFB2", "#F1C40F", "#AF3800"), 
-                     labels = c("Recent female", "Recent male", "Historic female", "Historic male"))+
-  labs(x="Age (years)", y="Total length (cm)", color = "Sample", fill = "Sample") + pl_theme
+                     labels = c("Recent female (n = 400)", "Recent male (n = 362)", "Historic female (n = 338)", "Historic male (n = 197)"))+
+  labs(x="Age (years)", y="Total length (cm)", color = "Sample", fill = "Sample", title = "Sex-specific von Bertalanffy growth") + pl_theme
 
 ggsave("Figures/VB-curve_recent-vs-historic-vs-fresh.png", Curve_pop_complex, width = 15, height = 15, units = "cm", dpi = 600, bg = "white")
+saveRDS(Curve_pop_complex, "Data/Pike/VB_curve-recent-vs-historic.rds")
 
 ```
 
@@ -1314,7 +1298,7 @@ Growthtable2 <- Pikemaster %>%
   filter(Sample == "Recent") %>%
   transmute(Fish_ID, TL_mm, Length_LI, Sample, Age, Cohort, Sex, Area, Genotype)%>%
   mutate(Genotype = as.factor(Genotype)) %>%
-  filter(Genotype != 0) %>%
+  filter(Genotype != 0 & Genotype != 5) %>%
   distinct()
 
 #extract samples
@@ -1343,7 +1327,7 @@ samples <- Pikepredict(fit_1)
 samples$geno_id <- as.factor(samples$geno_id)
 
 pl_theme =	theme_classic() +
-  theme(panel.grid.major = element_line(),
+  theme(panel.grid.major = element_line(linewidth = 0.5, colour = "lightgrey"),
         legend.box.background = element_rect(),
         axis.line = element_line(linewidth = .5, colour = "black", linetype = 1),
         axis.ticks = element_line(linewidth = .5, colour = "black"),
@@ -1356,7 +1340,7 @@ pl_theme =	theme_classic() +
         legend.position = c(0.8,0.2),
         plot.title = element_text(size = 14, colour = "black"))
 
-#Genotypes: 1 = brackish 1; 2 = brackish 2; 3 = freshwater/anadromous; 4 = brackish 3; 5 = freshwater
+#Genotypes: 1 = brackish 1; 2 = brackish 2; 3 = freshwater/anadromous; 5 = freshwater
 
 Historic <- ggplot(data = samples) + 
   geom_ribbon(aes(x = Agei, ymin = lower, ymax = upper, fill = geno_id), alpha = 0.3) +
@@ -1377,9 +1361,9 @@ Recent <- ggplot(data = samples2) +
   geom_line(aes(x = Agei, y = median, color = geno_id), linewidth = 1) + 
   geom_point(data = Growthtable2, aes(x = Age, y = Length_LI/10, color = Genotype), size = 1, alpha = .9) + 
   scale_x_continuous(breaks = seq(1,15,1), labels = c("1","","3","","5","","7","","9","","11","","13","","15"))+
-  scale_color_manual(breaks = c(1,2,3,4), values = c("#004643", "#C5D86D", "#00BFB2", "#F1C40F"), 
+  scale_color_manual(breaks = c(1,2,3,4), values = c("#004643", "#F1C40F", "#00BFB2", "#C5D86D"), 
                      labels = c("Brackish 1", "Brackish 2", "anadromous", "Freshwater"))+
-  scale_fill_manual(breaks = c(1,2,3,4), values = c("#004643", "#C5D86D", "#00BFB2", "#F1C40F"), 
+  scale_fill_manual(breaks = c(1,2,3,4), values = c("#004643", "#F1C40F", "#00BFB2", "#C5D86D"), 
                      labels = c("Brackish 1", "Brackish 2", "anadromous", "Freshwater"))+
   labs(x="Age (years)", y="Total length (cm)", color = "Sample", fill = "Sample") + pl_theme
 
@@ -1393,12 +1377,13 @@ ggsave("Figures/VB-curve_recent-vs-historic-genotypes.png", Recent_vs_historic, 
 ```{r Clean up LUNG data for modelling, include=FALSE, eval=FALSE}
 Data <- fread("Data/Environment/LUNG_data_Bodden_1970-2023.csv")
 
+Data$Value <- as.numeric(sub(",", ".", Data$Value))
+
 names(Data) <- c("ID", "Name", "Waterbody", "Date", "Year", "Day", "Month", "Parameter_short", "Parameter", "Sign", "Value", "Unit", "Depth",
                  "HW_Geo", "RW_Geo", "Visibility")
 
 Data1 <- Data %>%
   filter(Parameter_short %in% c("CHLOROPHL", "N", "P", "SAL", "W-T"))%>%
-  select(-Parameter, -Unit, -Depth)%>%
   mutate(Date = as.Date(lubridate::parse_date_time(gsub("\ .", "-", Date), orders = "dmy")))%>%
   group_by(ID, Name, Date, Parameter_short)%>%
   dplyr::mutate(Value = mean(Value, na.rm = TRUE))%>%
@@ -1472,8 +1457,9 @@ era5_celsius <- era5 - 273.15
 plot(era5_celsius[[201]])
 
 tbase <- 10
+tupper <- 24
 
-gdd_daily <- clamp(era5_celsius-tbase, lower = 0)
+gdd_daily <- clamp(era5_celsius - tbase, lower = 0, upper = tupper - tbase)
 
 # Extract year from each date
 years <- format(time(gdd_daily), "%Y")
@@ -1543,13 +1529,19 @@ Pikemaster4 <- Pikemaster3 %>%
   ungroup()
 
 #Model Length at age with length at age-1
+#regression for females
 LM_f <- lm(Length_back ~ Length_back2, data = Pikemaster4[Pikemaster4$Sex == "f",])
+#regression for males
 LM_m <- lm(Length_back ~ Length_back2, data = Pikemaster4[Pikemaster4$Sex == "m",])
+#regression for unknown sex
 LM_u <- lm(Length_back ~ Length_back2, data = Pikemaster4[Pikemaster4$Sex == "u",])
+
+#Look at fit
 summary(LM_f)
 summary(LM_m)
 summary(LM_u)
 
+#quick visual sanity check
 ggplot(Pikemaster4[Pikemaster4$Sex == "f"|Pikemaster4$Sex == "m",], aes(Length_back2, Length_back, color = Sex))+
   geom_point()+
   geom_smooth(method = "lm")
@@ -1559,13 +1551,18 @@ slope_f <- coef(LM_f)[2]
 slope_m <- coef(LM_m)[2]
 slope_u <- coef(LM_u)[2]
 
+#Correct year-specific back-calculated length for size
 Growthdata <- Pikemaster4 %>%
   mutate(GIndex = case_when(Sex == "f" ~ Length_back - slope_f * Length_back2,
                             Sex == "m" ~ Length_back - slope_m * Length_back2,
                             Sex == "u" ~ Length_back - slope_u * Length_back2)) %>%
   mutate(GIndex = case_when(is.na(GIndex) == "TRUE" ~ Length_back,
                             TRUE ~ GIndex)) %>%
-  transmute(Fish_ID, Sample, Lifeyear, Cohort, Year, Sex, Area, Pisc_mm, Genotype, GIndex) %>%
+  transmute(Fish_ID, Sample, 
+            Lifeyear = as.factor(Lifeyear), 
+            Cohort, Year, Sex, Area, Pisc_mm, 
+            Genotype = as.factor(Genotype), 
+            GIndex) %>%
   drop_na() %>%
   distinct()
 
@@ -1604,7 +1601,22 @@ Growthdata2 <- Growthdata%>%
 length(unique(Growthdata2$Fish_ID))
 length(unique(Growthdata2[Growthdata2$Sample == "Historic",]$Fish_ID))
 
-fwrite(Growthdata2, "Data/Pike/Pikedata_agespecmodel.csv")
+Growthdata3 <- Growthdata2 %>%
+  transmute(Fish_ID,
+            Sample = as.factor(Sample),
+            Lifeyear,
+            Cohort = as.factor(Cohort),
+            Year,
+            Sex = as.factor(Sex),
+            Area = as.factor(case_when(Area %in% c("KB", "SB", "BEZ", "BAT", "S", "GB", "WB", "BEG", "GJB", "NRB", "U", "VB") ~ "Mesohaline",
+                                       Area %in% c("P", "SAB", "DZB", "KJB") ~ "Oligohaline",
+                                       TRUE ~ "Freshwater")),
+            Pisc_mm,
+            Genotype = as.factor(Genotype),
+            GIndex, Secchi_m, Chla_mg_m3, Total_N, Total_P, SAL_PSU, SAL_SD, Months_highSAL, WT_Celsius, GDD)%>%
+  filter(GIndex > 0)
+
+fwrite(Growthdata3, "Data/Pike/Pikedata_agespecmodel.csv")
 ```
 
 ```{r data exploration, include=FALSE, eval=FALSE}
@@ -1648,119 +1660,140 @@ hist(Growthdata$GIndex, main = "", xlab = "Growth index")
 hist(Growthdata$Pisc_mm, main = "", xlab = "Piscivory increment")
 ```
 
-```{r modelling random effects, include=FALSE, eval=FALSE}
+```{r model random effects, include=FALSE, eval=FALSE}
 rm(list = ls())
 
 Growthdata <- fread("Data/Pike/Pikedata_agespecmodel.csv")
 
-# fit_base1 <- brm(GIndex ~ Lifeyear + Sex + Sample + Genotype + Area + (1|Fish_ID),
-#                  data = Growthdata, family = Gamma(link = "log"),
-#                  control = list(max_treedepth = 15, adapt_delta = 0.95),
-#                  iter = 10000, warmup = 5000, chains = 4)
-# 
-# saveRDS(fit_base1, "Data/GLMM_output/Basemodel_randomID.rds")
-# 
-# fit_base2 <- brm(GIndex ~ Lifeyear + Sex + Sample + Genotype + Area + (1|Fish_ID) + (1|Year),
-#                  data = Growthdata, family = Gamma(link = "log"),
-#                  control = list(max_treedepth = 15, adapt_delta = 0.95),
-#                  iter = 10000, warmup = 5000, chains = 4)
-# 
-# saveRDS(fit_base2, "Data/GLMM_output/Basemodel_randID-randyear.rds")
-# 
-# fit_base3 <- brm(GIndex ~ Lifeyear + Sex + Sample + Genotype + Area + (1|Fish_ID) + (1|Year) + (1|Cohort),
-#                  data = Growthdata, family = Gamma(link = "log"),
-#                  control = list(max_treedepth = 15, adapt_delta = 0.95),
-#                  iter = 10000, warmup = 5000, chains = 4)
-# 
-# saveRDS(fit_base3, "Data/GLMM_output/Basemodel_randID-randyear-randcorhort.rds")
+fit_base1 <- brm(GIndex ~ Lifeyear + Sex + Sample + Genotype + Area + (1|Fish_ID),
+                 data = Growthdata, family = Gamma(link = "log"),
+                 control = list(max_treedepth = 15, adapt_delta = 0.95),
+                 iter = 10000, warmup = 5000, chains = 4)
 
+saveRDS(fit_base1, "Data/GLMM_output/Basemodel_randomID.rds")
+
+loo_base1 <- loo(fit_base1)
+saveRDS(loo_base1, "Data/GLMM_output/LOO_basemodel_randomID.rds")
+
+fit_base2 <- brm(GIndex ~ Lifeyear + Sex + Sample + Genotype + Area + (1|Fish_ID) + (1|Year),
+                 data = Growthdata, family = Gamma(link = "log"),
+                 control = list(max_treedepth = 15, adapt_delta = 0.95),
+                 iter = 10000, warmup = 5000, chains = 4)
+
+saveRDS(fit_base2, "Data/GLMM_output/Basemodel_randID-randyear.rds")
+
+loo_base2 <- loo(fit_base2)
+saveRDS(loo_base2, "Data/GLMM_output/LOO_basemodel_randID-randyear.rds")
+
+fit_base3 <- brm(GIndex ~ Lifeyear + Sex + Sample + Genotype + Area + (1|Fish_ID) + (1|Year) + (1|Cohort),
+                 data = Growthdata, family = Gamma(link = "log"),
+                 control = list(max_treedepth = 15, adapt_delta = 0.95),
+                 iter = 10000, warmup = 5000, chains = 4)
+
+saveRDS(fit_base3, "Data/GLMM_output/Basemodel_randID-randyear-randcorhort.rds")
+
+
+loo_base3 <- loo(fit_base3)
+saveRDS(loo_base3, "Data/GLMM_output/LOO_basemodel_randID-randyear-randcorhort.rds")
+```
+
+```{r evaluate random effects, include=FALSE, eval=FALSE}
+rm(list = ls())
+
+Growthdata <- fread("Data/Pike/Pikedata_agespecmodel.csv")
 
 fit_base1 <- read_rds("Data/GLMM_output/Basemodel_randomID.rds")
 fit_base2 <- read_rds("Data/GLMM_output/Basemodel_randID-randyear.rds")
 fit_base3 <- read_rds("Data/GLMM_output/Basemodel_randID-randyear-randcorhort.rds")
 
-loo_base1 <- loo(fit_base1)
-loo_base2 <- loo(fit_base2)
-loo_base3 <- loo(fit_base3)
+loo_base1 <- read_rds("Data/GLMM_output/LOO_basemodel_randomID.rds")
+loo_base2 <- read_rds("Data/GLMM_output/LOO_basemodel_randID-randyear.rds")
+loo_base3 <- read_rds("Data/GLMM_output/LOO_basemodel_randID-randyear-randcorhort.rds")
 
 loo_compare(loo_base1, loo_base2, loo_base3)
 
-#FishID, Year, and Cohort should be random effects
+#FishID, Year, and Cohort are significant random effects
 ```
 
-```{r modelling interaction effects, include=FALSE, eval=FALSE}
+```{r model interaction effects, include=FALSE, eval=FALSE}
 rm(list = ls())
 
 Growthdata <- fread("Data/Pike/Pikedata_agespecmodel.csv")
-Growthdata <- Growthdata %>%
-  transmute(Fish_ID,
-            Sample = as.factor(Sample),
-            Lifeyear,
-            Cohort = as.factor(Cohort),
-            Year,
-            Sex = as.factor(Sex),
-            Area = as.factor(Area),
-            Pisc_mm,
-            Genotype = as.factor(Genotype),
-            GIndex, Secchi_m, Chla_mg_m3, Total_N, Total_P, SAL_PSU, SAL_SD, Months_highSAL, WT_Celsius, GDD)%>%
-  filter(GIndex > 0)
 
 #check sample size
 
 length(unique(Growthdata[Growthdata$Sample == "Historic",]$Fish_ID))
 
-#Test interaction: Sex x lifeyear, Genotype x Lifeyear, Area x Lifeyear, Genotype x Area, Sample x Lifeyear, Genotype x sample x lifeyear, Sex x Sample x Lifeyear,
-# #Area x Sample x Lifeyear
-# 
-# fit_fixedAll <- brm(GIndex ~ Lifeyear + Sex + Sample + Genotype + Area + (1|Fish_ID) + (1|Year) + (1|Cohort),
-#                     data = Growthdata, family = Gamma(link = "log"),
-#                     control = list(max_treedepth = 15, adapt_delta = 0.95),
-#                     iter = 40000, warmup = 20000, chains = 4)
-# 
-# saveRDS(fit_fixedAll, "Data/GLMM_output/Model_fixed-nointeraction.rds")
-# 
-# fit_HistYearGenointeract <- brm(GIndex ~ Lifeyear + Sex + Lifeyear * Sample * Genotype + Area + (1|Fish_ID) + (1|Year) + (1|Cohort),
-#                         data = Growthdata, family = Gamma(link = "log"),
-#                         control = list(max_treedepth = 15, adapt_delta = 0.95),
-#                         iter = 40000, warmup = 20000, chains = 4)
-# 
-# saveRDS(fit_HistYearGenointeract, "Data/GLMM_output/Model_fixed-hist_year-geno-interaction.rds")
-#
-# fit_HistYearinteract <- brm(GIndex ~ Lifeyear + Sex + Lifeyear * Sample + Genotype + Area + (1|Fish_ID) + (1|Year) + (1|Cohort),
-#                         data = Growthdata, family = Gamma(link = "log"),
-#                         control = list(max_treedepth = 15, adapt_delta = 0.95),
-#                         iter = 40000, warmup = 20000, chains = 4)
-# 
-# saveRDS(fit_HistYearinteract, "Data/GLMM_output/Model_fixed-Hist-interaction.rds")
-# 
+#Model interactions
+#No interaction
+
+fit_fixedAll <- brm(GIndex ~ Lifeyear + Sex + Sample + Genotype + Area + (1|Fish_ID) + (1|Year) + (1|Cohort),
+                    data = Growthdata, family = Gamma(link = "log"),
+                    control = list(max_treedepth = 15, adapt_delta = 0.95),
+                    iter = 40000, warmup = 20000, chains = 4)
+
+saveRDS(fit_fixedAll, "Data/GLMM_output/Model_fixed-nointeraction.rds")
+
+loo_int0 <- loo(fit_fixedAll, cores = 1)
+saveRDS(loo_int0, "Data/GLMM_output/Loo-nointeraction.rds")
+
+#Threeway interaction age x sample x genotype
+
+fit_HistYearGenointeract <- brm(GIndex ~ Lifeyear + Sex + Lifeyear * Sample * Genotype + Area + (1|Fish_ID) + (1|Year) + (1|Cohort),
+                        data = Growthdata, family = Gamma(link = "log"),
+                        control = list(max_treedepth = 15, adapt_delta = 0.95),
+                        iter = 40000, warmup = 20000, chains = 4)
+
+saveRDS(fit_HistYearGenointeract, "Data/GLMM_output/Model_fixed-hist_year-geno-interaction.rds")
+
+loo_int1 <- loo(fit_HistYearGenointeract, cores = 1)
+saveRDS(loo_int1, "Data/GLMM_output/Loo-HistYearGenointeraction.rds")
+
+#Just age x sample
+
+fit_HistYearinteract <- brm(GIndex ~ Lifeyear + Sex + Lifeyear * Sample + Genotype + Area + (1|Fish_ID) + (1|Year) + (1|Cohort),
+                        data = Growthdata, family = Gamma(link = "log"),
+                        control = list(max_treedepth = 15, adapt_delta = 0.95),
+                        iter = 40000, warmup = 20000, chains = 4)
+
+saveRDS(fit_HistYearinteract, "Data/GLMM_output/Model_fixed-Hist-interaction.rds")
+
+loo_int2 <- loo(fit_HistYearinteract, cores = 1)
+saveRDS(loo_int2, "Data/GLMM_output/Loo-HistYearinteraction.rds")
+
+#just sample x genotype
+
 fit_HistGenointeract <- brm(GIndex ~ Lifeyear + Sex + Sample * Genotype + Lifeyear + Area + (1|Fish_ID) + (1|Year) + (1|Cohort),
                                 data = Growthdata, family = Gamma(link = "log"),
                                 control = list(max_treedepth = 15, adapt_delta = 0.95),
                                 iter = 40000, warmup = 20000, chains = 4)
-# 
-# saveRDS(fit_HistGenointeract, "Data/GLMM_output/Model_fixed-Samp-Geno-interaction.rds")
+
+saveRDS(fit_HistGenointeract, "Data/GLMM_output/Model_fixed-Samp-Geno-interaction.rds")
+
+loo_int3 <- loo(fit_HistGenointeract, cores = 1)
+saveRDS(loo_int3, "Data/GLMM_output/Loo-HistGenointeraction.rds")
+```
+
+```{r evaluate interaction effects, include=FALSE, eval=FALSE}
+rm(list = ls())
+
+Growthdata <- fread("Data/Pike/Pikedata_agespecmodel.csv")
 
 fit_fixedAll <- read_rds("Data/GLMM_output/Model_fixed-nointeraction.rds")
 fit_HistYearGenointeract <- read_rds("Data/GLMM_output/Model_fixed-hist_year-geno-interaction.rds")
 fit_HistYearinteract <- read_rds("Data/GLMM_output/Model_fixed-Hist-interaction.rds")
 fit_HistGenointeract <- read_rds("Data/GLMM_output/Model_fixed-Samp-Geno-interaction.rds")
 
+loo_int0 <- read_rds("Data/GLMM_output/Loo-nointeraction.rds")
+loo_int1 <- read_rds("Data/GLMM_output/Loo-HistYearGenointeraction.rds")
+loo_int2 <- read_rds("Data/GLMM_output/Loo-HistYearinteraction.rds")
+loo_int3 <- read_rds("Data/GLMM_output/Loo-HistGenointeraction.rds")
+
 summary(fit_HistYearGenointeract)
-
-options(mc.cores = 1)
-loo_int0 <- loo(fit_fixedAll, cores = 1)
-loo_int1 <- loo(fit_HistYearGenointeract, cores = 1)
-loo_int2 <- loo(fit_HistYearinteract, cores = 1)
-loo_int3 <- loo(fit_HistGenointeract, cores = 1)
-
-saveRDS(loo_int0, "Data/GLMM_output/Loo-nointeraction.rds")
-saveRDS(loo_int1, "Data/GLMM_output/Loo-HistYearGenointeraction.rds")
-saveRDS(loo_int2, "Data/GLMM_output/Loo-HistYearinteraction.rds")
-saveRDS(loo_int3, "Data/GLMM_output/Loo-HistGenointeraction.rds")
 
 loo_compare(loo_int0, loo_int1, loo_int2, loo_int3)
 
-#Sample and Lifeyear is a significant interaction!
+#Threeway interaction sample x genotype x age is the most significant interaction!
 ```
 
 ```{r modelling fixed effects, include=FALSE, eval=FALSE}
@@ -1769,7 +1802,6 @@ rm(list = ls())
 Growthdata <- fread("Data/Pike/Pikedata_agespecmodel.csv")
 
 #Test environmental variables
-
 # Decide on trophic measure
 cor(Growthdata[, c("Chla_mg_m3", "Total_N", "Total_P", "Secchi_m")], use = "pairwise.complete.obs")
 complete_idx <- complete.cases(Growthdata[, c("Chla_mg_m3", "Total_N", "Total_P", "Secchi_m")])
@@ -1778,149 +1810,227 @@ fa_result <- factanal(
   Growthdata[complete_idx, c("Chla_mg_m3", "Total_N", "Total_P", "Secchi_m")],
   factors = 1,
   rotation = "varimax",
-  scores = "regression"
-)
+  scores = "regression")
 
 #Make mean of z-scores for Chla, P and N
-Growthdata2$ProductivityIndex <- rowMeans(Growthdata[, c("Chla_mg_m3", "Total_N", "Total_P")] * c(1, 1, 1), na.rm = TRUE)
+Growthdata$ProductivityIndex <- rowMeans(Growthdata[, c("Chla_mg_m3", "Total_N", "Total_P")] * c(1, 1, 1), na.rm = TRUE)
 
 ggplot(Growthdata, aes(Year, ProductivityIndex, color = Area))+
   geom_point()
 
 Growthdata1 <- Growthdata %>%
-  drop_na(Lifeyear, Sample, Sex, Genotype, Area, Pisc_mm, GDD)
+  drop_na(Lifeyear, Sample, Sex, Genotype, Area, Pisc_mm, GDD)%>%
+  filter(GIndex > 0)
 
-#Model fixed effects across the population
+Growthdata2 <- Growthdata1 %>%
+  drop_na(ProductivityIndex, SAL_PSU)
 
-fit_alleffects <- brm(GIndex ~ Lifeyear * Sample + Sex + Genotype + Area +
+#Model fixed effects (all obs.) across the population
+
+fit_alleffects <- brm(GIndex ~ Lifeyear * Sample * Genotype + Sex + Area +
                         Pisc_mm + GDD +
-                        (1|Fish_ID) + (1|Year) + (1|Cohort),
-                        data = Growthdata1, family = Gamma(link = "log"),
-                        control = list(max_treedepth = 15, adapt_delta = 0.95),
-                        iter = 10000, warmup = 5000, chains = 4)
+                        (1|Fish_ID) + (1|Cohort) + (1|Year),
+                      data = Growthdata1, family = Gamma(link = "log"),
+                      control = list(max_treedepth = 15, adapt_delta = 0.95),
+                      iter = 500, warmup = 250, chains = 4)
 
 saveRDS(fit_alleffects, "Data/GLMM_output/Model_all-effects.rds")
 
-fit_noGDD <- brm(GIndex ~ Lifeyear * Sample + Sex + Genotype + Area +
-                        Pisc_mm +
-                        (1|Fish_ID) + (1|Year) + (1|Cohort),
-                        data = Growthdata1, family = Gamma(link = "log"),
-                        control = list(max_treedepth = 15, adapt_delta = 0.95),
-                        iter = 10000, warmup = 5000, chains = 4)
+loo_fitall1 <- loo(fit_alleffects)
+saveRDS(loo_fitall1, "Data/GLMM_output/LOO_Model_all-effects.rds")
+
+fit_noGDD <- brm(GIndex ~ Lifeyear * Sample * Genotype + Sex + Area +
+                   Pisc_mm +
+                   (1|Fish_ID) + (1|Year) + (1|Cohort),
+                 data = Growthdata1, family = Gamma(link = "log"),
+                 control = list(max_treedepth = 15, adapt_delta = 0.95),
+                 iter = 40000, warmup = 20000, chains = 4)
 
 saveRDS(fit_noGDD, "Data/GLMM_output/Model_no-GDD.rds")
 
-fit_noPisc <- brm(GIndex ~ Lifeyear * Sample + Sex + Genotype + Area +
-                        GDD +
-                        (1|Fish_ID) + (1|Year) + (1|Cohort),
-                        data = Growthdata1, family = Gamma(link = "log"),
-                        control = list(max_treedepth = 15, adapt_delta = 0.95),
-                        iter = 10000, warmup = 5000, chains = 4)
+loo_noGDD <- loo(fit_noGDD)
+saveRDS(loo_noGDD, "Data/GLMM_output/LOO_Model_no-GDD.rds")
+
+fit_noPisc <- brm(GIndex ~ Lifeyear * Sample * Genotype + Sex + Area +
+                    GDD +
+                    (1|Fish_ID) + (1|Year) + (1|Cohort),
+                  data = Growthdata1, family = Gamma(link = "log"),
+                  control = list(max_treedepth = 15, adapt_delta = 0.95),
+                  iter = 40000, warmup = 20000, chains = 4)
 
 saveRDS(fit_noPisc, "Data/GLMM_output/Model_no-Pisc.rds")
 
-fit_noArea <- brm(GIndex ~ Lifeyear + Sex + Lifeyear * Sample + Genotype +
-                        Pisc_mm + GDD +
-                        (1|Fish_ID) + (1|Year) + (1|Cohort),
-                        data = Growthdata1, family = Gamma(link = "log"),
-                        control = list(max_treedepth = 15, adapt_delta = 0.95),
-                        iter = 10000, warmup = 5000, chains = 4)
+loo_noPisc <- loo(fit_noPisc)
+saveRDS(loo_noPisc, "Data/GLMM_output/LOO_Model_no-Pisc.rds")
+
+fit_noArea <- brm(GIndex ~ Lifeyear * Sample * Genotype + Sex +
+                    Pisc_mm + GDD +
+                    (1|Fish_ID) + (1|Year) + (1|Cohort),
+                  data = Growthdata1, family = Gamma(link = "log"),
+                  control = list(max_treedepth = 15, adapt_delta = 0.95),
+                  iter = 40000, warmup = 20000, chains = 4)
 
 saveRDS(fit_noArea, "Data/GLMM_output/Model_no-Area.rds")
 
-fit_alleffects <- read_rds("Data/GLMM_output/Model_all-effects.rds")
-fit_noGDD <- read_rds("Data/GLMM_output/Model_no-GDD.rds")
-fit_noPisc <- read_rds("Data/GLMM_output/Model_no-Pisc.rds")
+loo_noArea <- loo(fit_noArea)
+saveRDS(loo_noArea, "Data/GLMM_output/LOO_Model_no-Area.rds")
 
-
-loo_all <- loo(fit_alleffects)
-loo_GDD <- loo(fit_noGDD)
-loo_Pisc <- loo(fit_noPisc)
-
-loo_compare(loo_all, loo_GDD, loo_Pisc)
-
-# Model growth with all fixed effects and productivity factor
-fit_noGeno <-  brm(GIndex ~ Lifeyear * Sample + Sex + Area + 
-                            ProductivityIndex + Secchi_m + SAL_PSU + SAL_SD + WT_Celsius + GDD +
-                            (1|Fish_ID) + (1|Year) + (1|Cohort),
-                          data = Growthdata1, family = Gamma(link = "log"),
-                          control = list(max_treedepth = 15, adapt_delta = 0.95),
-                          iter = 10000, warmup = 5000, chains = 4)
-
-fit_alleffects_prod <- read_rds("Data/GLMM_output/Model_all-effects-updated.rds")
-
-loo_prod <- loo(fit_alleffects_prod)
-
-loo_compare(loo_all, loo_prod)
-
-saveRDS(fit_noGeno, "Data/GLMM_output/Model_no-Geno.rds")
-
-fit_noSex <-  brm(GIndex ~ Lifeyear * Sample + Genotype + Area + 
-                            ProductivityIndex + Secchi_m + SAL_PSU + SAL_SD + WT_Celsius + GDD +
-                            (1|Fish_ID) + (1|Year) + (1|Cohort),
-                          data = Growthdata1, family = Gamma(link = "log"),
-                          control = list(max_treedepth = 15, adapt_delta = 0.95),
-                          iter = 10000, warmup = 5000, chains = 4)
+fit_noSex <- brm(GIndex ~ Lifeyear * Sample * Genotype + Area +
+                   Pisc_mm + GDD +
+                   (1|Fish_ID) + (1|Year) + (1|Cohort),
+                 data = Growthdata1, family = Gamma(link = "log"),
+                 control = list(max_treedepth = 15, adapt_delta = 0.95),
+                 iter = 40000, warmup = 20000, chains = 4)
 
 saveRDS(fit_noSex, "Data/GLMM_output/Model_no-Sex.rds")
 
-fit_noInter <- brm(GIndex ~ Sex + Genotype + Area +
-                        Pisc_mm + GDD +
+loo_noSex <- loo(fit_noSex)
+saveRDS(loo_noSex, "Data/GLMM_output/LOO_Model_no-Sex.rds")
+
+# Model growth with all fixed effects and productivity factor (limited sample)
+
+fit_allefects2 <- brm(GIndex ~ Lifeyear * Sample * Genotype + Sex + Area +
+                        Pisc_mm + GDD + ProductivityIndex + SAL_PSU +
                         (1|Fish_ID) + (1|Year) + (1|Cohort),
-                        data = Growthdata1, family = Gamma(link = "log"),
-                        control = list(max_treedepth = 15, adapt_delta = 0.95),
-                        iter = 10000, warmup = 5000, chains = 4)
+                      data = Growthdata2, family = Gamma(link = "log"),
+                      control = list(max_treedepth = 15, adapt_delta = 0.95),
+                      iter = 10000, warmup = 5000, chains = 4)
 
-saveRDS(fit_noInter, "Data/GLMM_output/Model_no-Inter.rds")
+saveRDS(fit_allefects2, "Data/GLMM_output/Model_all-effects2.rds")
 
+loo_alleffects2 <- loo(fit_allefects2)
+saveRDS(loo_alleffects2, "Data/GLMM_output/LOO_Model_all-effects2.rds")
+
+fit_noSal <- brm(GIndex ~ Lifeyear * Sample * Genotype + Sex + Area +
+                     Pisc_mm + GDD + ProductivityIndex +
+                     (1|Fish_ID) + (1|Year) + (1|Cohort),
+                   data = Growthdata2, family = Gamma(link = "log"),
+                   control = list(max_treedepth = 15, adapt_delta = 0.95),
+                   iter = 40000, warmup = 20000, chains = 4)
+
+saveRDS(fit_noSal, "Data/GLMM_output/Model_all-effects2-nosal.rds")
+
+loo_noSal <- loo(fit_noSal)
+saveRDS(loo_noSal, "Data/GLMM_output/LOO_Model_all-effects2-nosal.rds")
+
+fit_noProd <- brm(GIndex ~ Lifeyear * Sample * Genotype + Sex + Area +
+                   Pisc_mm + GDD + SAL_PSU +
+                   (1|Fish_ID) + (1|Year) + (1|Cohort),
+                 data = Growthdata2, family = Gamma(link = "log"),
+                 control = list(max_treedepth = 15, adapt_delta = 0.95),
+                 iter = 40000, warmup = 20000, chains = 4)
+
+saveRDS(fit_no_Prod, "Data/GLMM_output/Model_all-effects2-nosal.rds")
+
+loo_noProd <- loo(fit_noProd)
+saveRDS(loo_noProd, "Data/GLMM_output/LOO_Model_all-effects2-nosal.rds")
+```
+
+```{r evaluate fixed effects, include=FALSE, eval=FALSE}
+rm(list = ls())
+
+Growthdata <- fread("Data/Pike/Pikedata_agespecmodel.csv")
+
+#Models with all obs
+fit_alleffects <- read_rds("Data/GLMM_output/Model_all-effects.rds")
+fit_noGDD <- read_rds("Data/GLMM_output/Model_no-GDD.rds")
+fit_noPisc <- read_rds("Data/GLMM_output/Model_no-Pisc.rds")
+fit_noArea <- read_rds("Data/GLMM_output/Model_no-Area.rds")
+fit_noSex <- read_rds("Data/GLMM_output/Model_no-Sex.rds")
+
+#Loo with all obs
+loo_fitall1 <- read_rds("Data/GLMM_output/LOO_Model_all-effects.rds")
+loo_noGDD <- read_rds("Data/GLMM_output/LOO_Model_no-GDD.rds")
+loo_noPisc <- read_rds("Data/GLMM_output/LOO_Model_no-Pisc.rds")
+loo_noArea <- read_rds("Data/GLMM_output/LOO_Model_no-Area.rds")
+loo_noSex <- read_rds("Data/GLMM_output/LOO_Model_no-Sex.rds")
+
+loo_compare(loo_fitall1, loo_noGDD, loo_noPisc, loo_noArea, loo_noSex)
+
+#Models for Prod and Sal effects
+fit_allefects2 <- read_rds("Data/GLMM_output/Model_all-effects2.rds")
+fit_noSal <- read_rds("Data/GLMM_output/Model_all-effects2-nosal.rds")
+fit_no_Prod <- read_rds("Data/GLMM_output/Model_all-effects2-nosal.rds")
+
+loo_alleffects2 <- read_rds("Data/GLMM_output/LOO_Model_all-effects2.rds")
+loo_noSal <- read_rds("Data/GLMM_output/LOO_Model_all-effects2-nosal.rds")
+loo_noProd <- read_rds("Data/GLMM_output/LOO_Model_all-effects2-nosal.rds")
+
+loo_compare(loo_alleffects2, loo_noSal, loo_noProd)
+
+# significant effects?
 ```
 
 ```{r modelling age-specific growth figures, include=FALSE, eval=FALSE}
 rm(list = ls())
 
-Growthdata <- fread("Data/Pike/Pikedata_agespecmodel.csv")
+Growthdata <- fread("Data/Pike/Pikedata_agespecmodel.csv") 
+Growthmodel <- read_rds("Data/GLMM_output/Model_fixed-hist_year-geno-interaction.rds")
 
-Growthdata2 <- Growthdata %>%
-  filter(Lifeyear < 11) %>%
-  filter(GIndex > 0) %>%
+Growthdata <- Growthdata %>% 
+  filter(GIndex > 0) %>% 
   reframe(Fish_ID, GIndex, Year, Cohort, Sample, 
           Lifeyear = as.factor(Lifeyear), 
           Sex = as.factor(Sex), 
-          Area = as.factor(case_when(Area %in% c("WRB", "NRB", "GB", "BAT", "S", "U") ~ "Mesohaline",
-                                     Area %in% c("SAB", "P", "KJB") ~ "Oligohaline",
-                                     TRUE ~ "Freshwater")), 
-          Genotype = as.factor(Genotype), 
-          Months_highSAL,
-          Pisc_mm = Pisc_mm,
-          Secchi_m = scale(Secchi_m),
-          Chla_mg_m3 = scale(Chla_mg_m3),
+          Area = Area,
+          Genotype = Genotype, 
+          Months_highSAL, Pisc_mm = Pisc_mm, 
+          Secchi_m = scale(Secchi_m), 
+          Chla_mg_m3 = scale(Chla_mg_m3), 
           Total_N = scale(Total_N),
-          Total_P = scale(Total_P),
-          SAL_PSU = scale(SAL_PSU),
-          SAL_SD = scale(SAL_SD),
-          WT_Celsius = scale(WT_Celsius),
+          Total_P = scale(Total_P), 
+          SAL_PSU = scale(SAL_PSU), 
+          SAL_SD = scale(SAL_SD), 
+          WT_Celsius = scale(WT_Celsius), 
           GDD = scale(GDD)) %>%
+  filter(!Area %in% c("Peene", "Barthe", "Sehrowbach", "Duwenbeek", "Beek")) %>%
   distinct()
+
+newdata <- expand.grid(Lifeyear = 1:13,
+                       Sample = c("Historic", "Recent"),
+                       Genotype = c(1:4),
+                       Sex = c("f", "m"),
+                       Area = unique(Growthdata$Area))
+
+pred <- fitted(Growthmodel,
+               newdata = newdata,
+               re_formula = NA,
+               summary = TRUE)
+
+plot_data <- cbind(newdata, pred)
+
+plot_data2 <- plot_data %>%
+  mutate(Lifeyear_num = as.numeric(as.character(Lifeyear))) %>%
+  semi_join(
+    Growthdata %>%
+      mutate(Lifeyear_num = as.numeric(as.character(Lifeyear))) %>%
+      distinct(Genotype, Sample, Lifeyear_num),
+    by = c("Genotype", "Sample", "Lifeyear_num")
+  )
 
 #Age-specific effects
 plot_theme <- theme(panel.grid.major = element_line(linewidth = .3, colour = "lightgrey"),
-        legend.position = c(0.65,0.8),
+        legend.position = c(0.7,0.8),
         legend.background = element_blank(),
         legend.box.background = element_rect(),
         axis.line = element_line(linewidth = 1, colour = "black", linetype = 1),
         axis.ticks = element_line(size = 1, colour = "black"),
         axis.text = element_text(size = 10, colour = "black"),
-        plot.title = element_text(size = 15, colour = "black"),
+        plot.title = element_text(size = 12, colour = "black"),
         axis.title = element_blank(),
         legend.text = element_text(size = 10, colour = "black"),
         legend.title = element_text(size = 10, colour = "black"),
         legend.key.size = unit(1,"line"))
 
-Geno1 <- ggplot(Growthdata2[Growthdata2$Genotype == 1,], aes(factor(Lifeyear), GIndex, fill = Sample))+
+Geno1 <- ggplot(Growthdata[Growthdata$Genotype == 1,], aes(as.factor(Lifeyear), GIndex, fill = Sample))+
   geom_boxplot(lwd = .5, outlier.shape = NA, width = .6, position = position_dodge(width = NULL))+
+  # stat_summary(fun.data = function(x) data.frame(ymin = quantile(x, 0.025), y = median(x), ymax = quantile(x, 0.975)),
+  # geom = "pointrange",  position = position_dodge(width = 0.75)) +
+  #geom_smooth(method = "lm")+
   labs(title = "Genotype 1 (brackish)", x="Age (years)", y=expression("Growth index"), fill="Sample")+
-  scale_x_discrete(limits=factor(c(1:9)),
-                   breaks=c("1","2","3","4","5","6","7","8","9"))+
+  scale_x_discrete(limits = c(1:10),
+                  breaks=c(1:10))+
+  scale_y_continuous(limits = c(100, 500)) +
   scale_fill_manual(breaks = c("Historic","Recent"),
                     values = c("#00BFB2","#C5D86D"),
                     labels = c("Historic (N = 190)", "Recent (N = 269)"))+
@@ -1928,51 +2038,65 @@ Geno1 <- ggplot(Growthdata2[Growthdata2$Genotype == 1,], aes(factor(Lifeyear), G
   plot_theme
 
 
-Geno2 <- ggplot(Growthdata2[Growthdata2$Genotype == 2,], aes(factor(Lifeyear), GIndex, fill = Sample))+
+Geno2 <- ggplot(Growthdata[Growthdata$Genotype == 2,], aes(as.factor(Lifeyear), GIndex, fill = Sample))+
   geom_boxplot(lwd = .5, outlier.shape = NA, width = .6, position = position_dodge(width = NULL))+
+  #stat_summary(fun.data = function(x) data.frame(ymin = quantile(x, 0.025), y = median(x), ymax = quantile(x, 0.975)),
+  #geom = "pointrange",  position = position_dodge(width = 0.75)) +
+  #geom_smooth(method = "lm")+
   labs(title = "Genotype 2 (brackish)", x="Age (years)", y=expression("Growth index"), fill="Sample")+
-  scale_x_discrete(limits=factor(c(1:9)),
-                   breaks=c("1","2","3","4","5","6","7","8","9"))+
+  scale_x_discrete(limits = c(1:10),
+                  breaks=c(1:10))+
+  scale_y_continuous(limits = c(100, 500)) +
   scale_fill_manual(breaks = c("Historic","Recent"),
                     values = c("#00BFB2","#C5D86D"),
-                    labels = c("Historic (N = 111)", "Recent (N = 89)"))+
+                    labels = c("Historic (N = 111)", "Recent (N = 87)"))+
   theme_classic()+
   plot_theme
 
-Geno3 <- ggplot(Growthdata2[Growthdata2$Genotype == 3,], aes(factor(Lifeyear), GIndex, fill = Sample))+
+Geno3 <- ggplot(Growthdata[Growthdata$Genotype == 3,], aes(as.factor(Lifeyear), as.numeric(GIndex), fill = Sample))+
   geom_boxplot(lwd = .5, outlier.shape = NA, width = .6, position = position_dodge(width = NULL))+
+  #stat_summary(fun.data = function(x) data.frame(ymin = quantile(x, 0.025), y = median(x), ymax = quantile(x, 0.975)),
+  #geom = "pointrange",  position = position_dodge(width = 0.75)) +
+  #geom_smooth(method = "lm")+
   labs(title = "Genotype 3 (anadromous)", x="Age (years)", y=expression("Growth index"), fill="Sample")+
-  scale_x_discrete(limits=factor(c(1:9)),
-                   breaks=c("1","2","3","4","5","6","7","8","9"))+
+  scale_x_discrete(limits = c(1:10),
+                  breaks=c(1:10))+
+  scale_y_continuous(limits = c(100, 500)) +
   scale_fill_manual(breaks = c("Historic","Recent"),
                     values = c("#00BFB2","#C5D86D"),
-                    labels = c("Historic (N = 91)", "Recent (N = 50)"))+
+                    labels = c("Historic (N = 91)", "Recent (N = 22)"))+
   theme_classic()+
   plot_theme
 
-Geno4 <- ggplot(Growthdata2[Growthdata2$Genotype == 4,], aes(factor(Lifeyear), GIndex, fill = Sample))+
+Geno4 <- ggplot(Growthdata[Growthdata$Genotype == 4,], aes(as.factor(Lifeyear), as.numeric(GIndex), fill = Sample))+
   geom_boxplot(lwd = .5, outlier.shape = NA, width = .6, position = position_dodge(width = NULL))+
+  #stat_summary(fun.data = function(x) data.frame(ymin = quantile(x, 0.025), y = median(x), ymax = quantile(x, 0.975)),
+  #geom = "pointrange",  position = position_dodge(width = 0.75)) +
+  #geom_smooth(method = "lm")+
   labs(title = "Genotype 4 (freshwater)", x="Age (years)", y=expression("Growth index"), fill="Sample")+
-  scale_x_discrete(limits=factor(c(1:9)),
-                   breaks=c("1","2","3","4","5","6","7","8","9"))+
+  scale_x_discrete(limits = c(1:10),
+                  breaks=c(1:10))+
+  scale_y_continuous(limits = c(100, 500)) +
   scale_fill_manual(breaks = c("Historic","Recent"),
                     values = c("#00BFB2","#C5D86D"),
-                    labels = c("Historic (N = 26)", "Recent (N = 113)"))+
+                    labels = c("Historic (N = 26)", "Recent (N = 34)"))+
   theme_classic()+
   plot_theme
+
+VB <- readRDS("Data/Pike/VB_curve-recent-vs-historic.rds")
 
 Genos <- ggarrange(Geno1, Geno2, Geno3, Geno4)
 Genos2 <- annotate_figure(Genos, left = text_grob("Growth Index", rot = 90, size = 15),
                           bottom = text_grob("Age (years)", size = 15))
 
-ggsave("Figures/Age-Geno-dependent.png", Genos2, width = 16, height = 16, units = "cm", dpi = 600, bg = "white")
+VB_Geno <- ggarrange(VB, Genos2, labels = c("A", "B"), ncol = 1)
 
-#Max size anadromous: 
+ggsave("Figures/VB-Age-dependent-growth.png", VB_Geno, width = 16, height = 25, units = "cm", dpi = 600, bg = "white")
 ```
 
 # Stomach contents
 
-```{r stomach content cleanup recent, include=FALSE, eval=FALSE}
+```{r stomach content cleanup recent biomass, include=FALSE, eval=FALSE}
 rm(list = ls())
 
 #Recent stomach data
@@ -2146,7 +2270,7 @@ fwrite(SC_biomass2, "Data/Pike/Stomach_proportions_total.csv")
 fwrite(SC_size, "Data/Pike/Stomach_sizes_total.csv")
 ```
 
-```{r stomach content cleanup historic, include=FALSE, eval=FALSE}
+```{r stomach content cleanup historic biomass, include=FALSE, eval=FALSE}
 rm(list = ls())
 
 # Winkler biomass data
@@ -2161,10 +2285,10 @@ SC_Winkler <- SC_Winkler %>%
                        Year == "1990" ~ 18,
                        Year == "2015" ~ 83))
 
-# Biomass proportions pre - 1990
+# Biomass proportions pre - 1990, remove the ONE pike
 
 SC_Winkler_hist <- SC_Winkler %>%
-  filter(Year != "2015" & Year != "alle")%>%
+  filter(Year != "2015" & Year != "alle" & Species != "Hecht")%>%
   group_by(Species) %>%
   mutate(Percentage = Percentage*N/97) %>%
   reframe(Origin = "Winkler_past",
@@ -2257,11 +2381,289 @@ fwrite(Preysize_past, "Data/Pike/Preysize-proportions-past.csv")
 fwrite(Preysize_15, "Data/Pike/Preysize-proportions-15.csv")
 ```
 
-```{r stomach content overview graphics, include=FALSE, eval=FALSE}
+```{r stomach content cleanup frequency, include=FALSE, eval=FALSE}
+rm(list = ls())
+
+#read in data
+
+SC_all <- fread("Data/Pike/Stomach-contents-recent-all.csv")
+SC_all <- SC_all %>% filter(pike_TL_mm > 400)
+
+Winkler_preysize <- fread("Data/Pike/Winkler_Daten_Laenge.csv")
+
+Winkler_preysize_past <- Winkler_preysize %>%
+  mutate(Year = year(as.Date(parse_date_time(Date, "dmy")))) %>%
+  filter(Year < 2015)
+
+Winkler_preysize_15 <- Winkler_preysize %>%
+  mutate(Year = year(as.Date(parse_date_time(Date, "dmy")))) %>%
+  filter(Year == 2015)
+
+#Dummy IDs for historic dataset
+
+Winkler_preysize_past <- Winkler_preysize_past %>%
+  dplyr::mutate(Pike_ID = paste(Date, Pike_TL_cm, sep = "_"))
+
+Winkler_preysize_15 <- Winkler_preysize_15 %>%
+  dplyr::mutate(Pike_ID = paste(Date, Pike_TL_cm, sep = "_"))
+
+#Harmonise species across data sets
+
+recent_species_map <- c(
+  "Perca fluviatilis"      = "P. fluviatilis",
+  "Clupea harengus"        = "C. harengus",
+  "Rutilus rutilus"        = "R. rutilus",
+  "Neogobius melanostomus" = "N. melanostomus",
+  "Sander lucioperca"      = "S. lucioperca",
+  "Platichthys flesus"     = "P. flesus",
+  "Gymnocephalus cernua"   = "G. cernua",
+  "Gasterosteus aculeatus" = "G. aculeatus",
+  "Gasteroseus aculeatus"  = "G. aculeatus",
+  "Pungitis pungitis"      = "P. pungitius"
+)
+
+winkler_species_map <- c(
+  "C.harengus"     = "C. harengus",
+  "R.rutilus"      = "R. rutilus",
+  "P.fluviatilis"  = "P. fluviatilis",
+  "S.lucioperca"   = "S. lucioperca",
+  "N.melanostomus" = "N. melanostomus",
+  "G.cernua"       = "G. cernua",
+  "G.aculeatus"    = "G. aculeatus",
+  "A.tobianus"     = "A. tobianus",
+  "O.eperlanus"    = "O. eperlanus",
+  "Z.vivparus"     = "Z. viviparus",
+  "A.brama"        = "A. brama",
+  "E.lucius"       = "E. lucius"
+)
+
+SC_all <- SC_all %>%
+  dplyr::mutate(Species_raw = dplyr::if_else(species %in% names(recent_species_map),
+                                              recent_species_map[species], species))
+
+Winkler_preysize_past <- Winkler_preysize_past %>%
+  dplyr::mutate(Species_raw = dplyr::if_else(Prey_spec %in% names(winkler_species_map),
+                                              winkler_species_map[Prey_spec], Prey_spec))
+
+Winkler_preysize_15 <- Winkler_preysize_15 %>%
+  dplyr::mutate(Species_raw = dplyr::if_else(Prey_spec %in% names(winkler_species_map),
+                                              winkler_species_map[Prey_spec], Prey_spec))
+
+n_pike_recent <- n_distinct(SC_all$fish_ID)
+n_pike_past   <- n_distinct(Winkler_preysize_past$Pike_ID)
+n_pike_15     <- n_distinct(Winkler_preysize_15$Pike_ID)
+
+#%Frequency of occurrence with a 5% cutoff
+#"Other" = share of individuals carrying one or more rare species that occurr in less than 5% of stomachs
+
+build_FO_table <- function(df, ind_col, species_col, n_pike, cutoff = 0.05) {
+  ind_species <- df %>% dplyr::distinct(.data[[ind_col]], .data[[species_col]])
+
+  FO_raw <- ind_species %>%
+    dplyr::count(.data[[species_col]], name = "n_ind") %>%
+    dplyr::mutate(Proportion = n_ind / n_pike)
+
+  common <- FO_raw %>% dplyr::filter(Proportion >= cutoff) %>% dplyr::pull(.data[[species_col]])
+
+  FO_common <- FO_raw %>%
+    dplyr::filter(.data[[species_col]] %in% common) %>%
+    dplyr::rename(Species = !!species_col)
+
+  n_other <- ind_species %>%
+    dplyr::filter(!(.data[[species_col]] %in% common)) %>%
+    dplyr::distinct(.data[[ind_col]]) %>%
+    nrow()
+
+  dplyr::bind_rows(
+    FO_common,
+    tibble::tibble(Species = "Other", n_ind = n_other, Proportion = n_other / n_pike)
+  ) %>%
+    dplyr::arrange(dplyr::desc(Proportion))
+}
+
+Prey_FO_recent <- build_FO_table(SC_all, "fish_ID", "Species_raw", n_pike_recent)
+Prey_FO_past   <- build_FO_table(Winkler_preysize_past, "Pike_ID", "Species_raw", n_pike_past)
+Prey_FO_15     <- build_FO_table(Winkler_preysize_15, "Pike_ID", "Species_raw", n_pike_15)
+
+# --- Shared colour lookup, built once from the union of species across all 3 periods ---
+all_common_species <- sort(unique(c(
+  setdiff(Prey_FO_recent$Species, "Other"),
+  setdiff(Prey_FO_past$Species, "Other"),
+  setdiff(Prey_FO_15$Species, "Other")
+)))
+
+palette_colors <- khroma::colour("discrete rainbow")(length(all_common_species))
+species_colors <- setNames(as.character(palette_colors), all_common_species)
+species_colors["Other"] <- "grey60"
+
+Prey_FO_recent <- Prey_FO_recent %>% dplyr::mutate(Species = factor(Species, levels = names(species_colors)))
+Prey_FO_past   <- Prey_FO_past   %>% dplyr::mutate(Species = factor(Species, levels = names(species_colors)))
+Prey_FO_15     <- Prey_FO_15     %>% dplyr::mutate(Species = factor(Species, levels = names(species_colors)))
+
+# --- Order bars by descending contribution within each panel, "Other" always last ---
+order_by_contribution <- function(df) {
+  df %>%
+    dplyr::mutate(Species = as.character(Species)) %>%
+    dplyr::arrange(Species == "Other", dplyr::desc(Proportion)) %>%
+    dplyr::mutate(Species = factor(Species, levels = unique(Species)))
+}
+
+Prey_FO_recent <- order_by_contribution(Prey_FO_recent)
+Prey_FO_past   <- order_by_contribution(Prey_FO_past)
+Prey_FO_15     <- order_by_contribution(Prey_FO_15)
+
+# --- Bar charts ---
+FO_recent <- ggplot(Prey_FO_recent, aes(Species, Proportion, fill = Species)) +
+  geom_col() +
+  geom_text(aes(label = scales::percent(Proportion, accuracy = 0.1)), vjust = -0.4, size = 2.5) +
+  scale_fill_manual(values = species_colors, drop = TRUE) +
+  scale_y_continuous(labels = scales::percent, expand = expansion(mult = c(0, 0.15))) +
+  labs(title = "Prey frequency of occurrence (%)", x = NULL, y = "% of individuals") +
+  theme_classic() +
+  theme(plot.title = element_text(size = 10, colour = "transparent"),
+        axis.text.x = element_text(angle = 45, hjust = 1, size = 8, colour = "black"),
+        axis.text.y = element_text(size = 8, colour = "black"),
+        legend.position = "none")
+
+FO_past <- ggplot(Prey_FO_past, aes(Species, Proportion, fill = Species)) +
+  geom_col() +
+  geom_text(aes(label = scales::percent(Proportion, accuracy = 0.1)), vjust = -0.4, size = 2.5) +
+  scale_fill_manual(values = species_colors, drop = TRUE) +
+  scale_y_continuous(labels = scales::percent, expand = expansion(mult = c(0, 0.15))) +
+  labs(title = "Prey frequency of occurrence (%)", x = NULL, y = "% of individuals") +
+  theme_classic() +
+  theme(plot.title = element_text(size = 10, colour = "black"),
+        axis.text.x = element_text(angle = 45, hjust = 1, size = 8, colour = "black"),
+        axis.text.y = element_text(size = 8, colour = "black"),
+        legend.position = "none")
+
+FO_15 <- ggplot(Prey_FO_15, aes(Species, Proportion, fill = Species)) +
+  geom_col() +
+  geom_text(aes(label = scales::percent(Proportion, accuracy = 0.1)), vjust = -0.4, size = 2.5) +
+  scale_fill_manual(values = species_colors, drop = TRUE) +
+  scale_y_continuous(labels = scales::percent, expand = expansion(mult = c(0, 0.15))) +
+  labs(title = "Prey frequency of occurrence (%)", x = NULL, y = "% of individuals") +
+  theme_classic() +
+  theme(plot.title = element_text(size = 10, colour = "transparent"),
+        axis.text.x = element_text(angle = 45, hjust = 1, size = 8, colour = "black"),
+        axis.text.y = element_text(size = 8, colour = "black"),
+        legend.position = "none")
+
+# --- Size / length histograms (unchanged) ---
+Sizes_past <- ggplot(Winkler_preysize_past) +
+  geom_histogram(aes(Prey_TL_cm)) +
+  scale_x_continuous(limits = c(0, 51)) +
+  labs(title = "Prey size distribution",
+       x = "Standard length (cm)") +
+  geom_vline(xintercept = mean(Winkler_preysize_past$Prey_TL_cm),
+             colour = "red", linetype = "dotted", linewidth = 1) +
+  theme_classic() +
+  theme(plot.title = element_text(size = 10, color = "black"),
+        axis.title = element_text(size = 10, color = "black"),
+        axis.text = element_text(size = 10, color = "black"))
+
+Sizes_15 <- ggplot(Winkler_preysize_15) +
+  geom_histogram(aes(Prey_TL_cm)) +
+  scale_x_continuous(limits = c(0, 51)) +
+  labs(title = "Prey size distribution",
+       x = "Standard length (cm)") +
+  geom_vline(xintercept = mean(Winkler_preysize_15$Prey_TL_cm), colour = "red",
+             linetype = "dotted", linewidth = 1) +
+  theme_classic() +
+  theme(plot.title = element_text(size = 10, color = "transparent"),
+        axis.title = element_text(size = 10, color = "black"),
+        axis.text = element_text(size = 10, color = "black"))
+
+Sizes_recent <- ggplot(SC_all) +
+  geom_histogram(aes(prey_length_mm/10)) +
+  scale_x_continuous(limits = c(0, 51)) +
+  labs(title = "Prey size distribution",
+       x = "Standard length (cm)") +
+  geom_vline(xintercept = mean(SC_all$prey_length_mm/10), colour = "red",
+             linetype = "dotted", linewidth = 1) +
+  theme_classic() +
+  theme(plot.title = element_text(size = 10, color = "transparent"),
+        axis.title = element_text(size = 10, color = "black"),
+        axis.text = element_text(size = 10, color = "black"))
+
+Hist_past <- ggplot(Winkler_preysize_past) +
+  geom_histogram(aes(Pike_TL_cm)) +
+  scale_x_continuous(limits = c(0, 125)) +
+  labs(title = "Pike size distribution",
+       x = "Total length (cm)") +
+  geom_vline(xintercept = mean(Winkler_preysize_past$Pike_TL_cm), colour = "red",
+             linetype = "dotted", linewidth = 1) +
+  theme_classic() +
+  theme(plot.title = element_text(size = 10, color = "black"),
+        axis.title = element_text(size = 10, color = "black"),
+        axis.text = element_text(size = 10, color = "black"))
+
+Hist_15 <- ggplot(Winkler_preysize_15) +
+  geom_histogram(aes(Pike_TL_cm)) +
+  scale_x_continuous(limits = c(0, 125)) +
+  labs(title = "Pike size distribution",
+       x = "Total length (cm)") +
+  geom_vline(xintercept = mean(Winkler_preysize_15$Pike_TL_cm), colour = "red",
+             linetype = "dotted", linewidth = 1) +
+  theme_classic() +
+  theme(plot.title = element_text(size = 10, color = "transparent"),
+        axis.title = element_text(size = 10, color = "black"),
+        axis.text = element_text(size = 10, color = "black"))
+
+Hist_recent <- ggplot(SC_all) +
+  geom_histogram(aes(pike_TL_mm/10)) +
+  scale_x_continuous(limits = c(0, 125)) +
+  labs(title = "Pike size distribution",
+       x = "Total length (cm)") +
+  geom_vline(xintercept = mean(SC_all$pike_TL_mm/10, na.rm = TRUE), colour = "red",
+             linetype = "dotted", linewidth = 1) +
+  theme_classic() +
+  theme(plot.title = element_text(size = 10, color = "transparent"),
+        axis.title = element_text(size = 10, color = "black"),
+        axis.text = element_text(size = 10, color = "black"))
+
+# --- Combine per period ---
+Past <- ggarrange(FO_past, Sizes_past, Hist_past, nrow = 1)
+Past1 <- annotate_figure(Past, top = text_grob("1987 - 1990 (N = 97)", size = 12, color = "black"))
+
+Year15 <- ggarrange(FO_15, Sizes_15, Hist_15, nrow = 1)
+Year15.1 <- annotate_figure(Year15, top = text_grob("Spring 2015 (N = 83)", size = 12, color = "black"))
+
+Recent <- ggarrange(FO_recent, Sizes_recent, Hist_recent, nrow = 1)
+Recent1 <- annotate_figure(Recent, top = text_grob("2019 - 2022 (N = 171)", size = 12, color = "black"))
+
+# --- Legend (species -> colour taken directly from the shared lookup) ---
+dummy_data1 <- data.frame(
+  Species = factor(names(species_colors), levels = names(species_colors)),
+  x = seq_along(species_colors),
+  y = seq_along(species_colors)
+)
+
+legend_plot1 <- ggplot(dummy_data1, aes(x = x, y = y, colour = Species)) +
+  geom_point(size = 3) +
+  scale_colour_manual(values = species_colors, breaks = names(species_colors)) +
+  guides(colour = guide_legend(title = "Species", ncol = 3)) +
+  theme_void()
+
+legend1 <- cowplot::get_legend(legend_plot1)
+
+SCA_figure <- cowplot::plot_grid(Past1, Year15.1, Recent1,
+                                  labels = c("A", "B", "C"),
+                                  nrow = 3, ncol = 1)
+
+ggsave("Figures/Stomach-contents-Freq-Ocurr.png", SCA_figure, width = 25, height = 20, units = "cm", dpi = 600, bg = "white")
+```
+
+
+```{r stomach content biomass graphics, include=FALSE, eval=FALSE}
 rm(list = ls())
 
 #raw data
 SC_all <- fread("Data/Pike/Stomach-contents-recent-all.csv")
+
+#filter out smallies
+SC_all <- SC_all %>% filter(pike_TL_mm > 400)
+
 Winkler_preysize <- fread("Data/Pike/Winkler_Daten_Laenge.csv")
 
 
@@ -2357,8 +2759,8 @@ Biomass_past <- ggplot(Prey_biomass_past2, aes(x = "", y = Proportion, fill = as
   theme_void()+
   theme(plot.title = element_text(size = 10, color = "black"),
         legend.position = "none")+
-  scale_fill_manual(breaks = c(1, 2, 3, 4, 5, 6, 7, 8), 
-                    values = c("#1B9E77", "#66A61E", "#7570B3", "#A6761D", "#E6AB02", "#D95F02", "darkgreen", "blue"))
+  scale_fill_manual(breaks = c(1, 2, 3, 4, 6, 7, 8), 
+                    values = c("#1B9E77", "#66A61E","#A6761D", "#7570B3", "#E6AB02", "#D95F02", "blue"))
 
 Biomass_15 <- ggplot(Prey_biomass_15.2, aes(x = "", y = Proportion, fill = as.factor(Order))) +
   geom_bar(stat = "identity") +
@@ -2377,7 +2779,9 @@ Sizes_past <- ggplot(Winkler_preysize_past) +
   geom_histogram(aes(Prey_TL_cm)) +
   scale_x_continuous(limits = c(0, 51)) +
   labs(title = "Prey size distribution",
-       x = "Total length (cm)") +
+       x = "Standard length (cm)") +
+  geom_vline(xintercept = mean(Winkler_preysize_past$Prey_TL_cm), 
+             colour = "red", linetype = "dotted", linewidth = 1) +
   theme_classic() +
   theme(plot.title = element_text(size = 10, color = "black"),,
         axis.title = element_text(size = 10, color = "black"),
@@ -2387,7 +2791,9 @@ Sizes_15 <- ggplot(Winkler_preysize_15) +
   geom_histogram(aes(Prey_TL_cm)) +
   scale_x_continuous(limits = c(0, 51)) +
   labs(title = "Prey size distribution",
-       x = "Total length (cm)") +
+       x = "Standard length (cm)") +
+  geom_vline(xintercept = mean(Winkler_preysize_15$Prey_TL_cm), colour = "red", 
+             linetype = "dotted", linewidth = 1) +
   theme_classic() +
   theme(plot.title = element_text(size = 10, color = "transparent"),,
         axis.title = element_text(size = 10, color = "black"),
@@ -2397,7 +2803,9 @@ Sizes_recent <- ggplot(SC_all) +
   geom_histogram(aes(prey_length_mm/10)) +
   scale_x_continuous(limits = c(0, 51)) +
   labs(title = "Prey size distribution",
-       x = "Total length (cm)") +
+       x = "Standard length (cm)") +
+  geom_vline(xintercept = mean(SC_all$prey_length_mm/10), colour = "red", 
+             linetype = "dotted", linewidth = 1) +
   theme_classic() +
   theme(plot.title = element_text(size = 10, color = "transparent"),,
         axis.title = element_text(size = 10, color = "black"),
@@ -2408,6 +2816,8 @@ Hist_past <- ggplot(Winkler_preysize_past) +
   scale_x_continuous(limits = c(0, 125)) +
   labs(title = "Pike size distribution",
        x = "Total length (cm)") +
+  geom_vline(xintercept = mean(Winkler_preysize_past$Pike_TL_cm), colour = "red", 
+             linetype = "dotted", linewidth = 1) +
   theme_classic() +
   theme(plot.title = element_text(size = 10, color = "black"),,
         axis.title = element_text(size = 10, color = "black"),
@@ -2418,6 +2828,8 @@ Hist_15 <- ggplot(Winkler_preysize_15) +
     scale_x_continuous(limits = c(0, 125)) +
   labs(title = "Pike size distribution",
        x = "Total length (cm)") +
+  geom_vline(xintercept = mean(Winkler_preysize_15$Pike_TL_cm), colour = "red", 
+             linetype = "dotted", linewidth = 1) +
   theme_classic() +
   theme(plot.title = element_text(size = 10, color = "transparent"),
         axis.title = element_text(size = 10, color = "black"),
@@ -2428,6 +2840,8 @@ Hist_recent <- ggplot(SC_all) +
     scale_x_continuous(limits = c(0, 125)) +
   labs(title = "Pike size distribution",
        x = "Total length (cm)") +
+  geom_vline(xintercept = mean(SC_all$pike_TL_mm/10, na.rm = TRUE), colour = "red", 
+             linetype = "dotted", linewidth = 1) +
   theme_classic() +
   theme(plot.title = element_text(size = 10, color = "transparent"),,
         axis.title = element_text(size = 10, color = "black"),
@@ -2445,11 +2859,7 @@ Recent1 <- annotate_figure(Recent, top = text_grob("2019 - 2022 (N = 171)", size
 
 #Dummy data for plotting
 species_colors <- c("C. harengus" = "#1B9E77", "R. rutilus" = "#66A61E", "P. fluviatilis" = "#D95F02", "Z. viviparus" = "#7570B3", "P. flesus" = "#E7298A", 
-                    "G. cernua" = "#E6AB02",  "E. lucius" = "#A6761D", "B. bjoerkna" = "#666666", "O. eperlanus" = "darkred", "N. melanostomus" = "cyan", 
-                    "S. lucioperca" = "red",  "A. brama" = "darkgreen",  "Other" = "blue")
-
-size_classes_colors <- c(">30 cm" = "#252525", "25 - 30 cm" = "#525252","20 - 25 cm" = "#737373","15 - 20 cm" = "#969696","10 - 15 cm" = "#BDBDBD","5 - 10 cm" = "#D9D9D9",
-                         "0 - 5 cm" = "#F7F7F7")
+                    "G. cernua" = "#E6AB02", "N. melanostomus" = "cyan", "S. lucioperca" = "#A6761D", "Other" = "blue")
 
 # Dummy datasets
 dummy_data1 <- data.frame(
@@ -2491,19 +2901,25 @@ Winkler_preysize_15 <- Winkler_preysize %>%
   mutate(Year = year(as.Date(parse_date_time(Date, "dmy")))) %>%
            filter(Year == 2015)
 
-#test whether it´s a linear or non-linear relationship
+#join them
 
-lm_preysize_past <- lm(Prey_TL_cm ~ Pike_TL_cm, data = Winkler_preysize_past)
-lm_preysize_15 <- lm(Prey_TL_cm  ~ Pike_TL_cm, data = Winkler_preysize_15)
-lm_preysize_rec <- lm(prey_length_mm ~ pike_TL_mm, data = SC_all)
+SC_join <- SC_all %>%
+  transmute(Sample = "Recent",
+            Preysize = prey_length_mm/10,
+            Pikesize = pike_TL_mm)
 
-gam_preysize_past <- gam(Prey_TL_cm ~ s(Pike_TL_cm), data = Winkler_preysize_past)
-gam_preysize_15 <- gam(Prey_TL_cm  ~ s(Pike_TL_cm), data = Winkler_preysize_15)
-gam_preysize_rec <- gam(prey_length_mm ~ s(pike_TL_mm), data = SC_all)
+Winkler_join <- Winkler_preysize %>%
+  transmute(Sample = case_when(year(as.Date(parse_date_time(Date, "dmy"))) < 2015 ~ "Spring 2015",
+                               TRUE ~ "Historic"),
+            Preysize = Prey_TL_cm,
+            Pikesize = Pike_TL_cm)
 
-anova(lm_preysize_past, gam_preysize_past)
-anova(lm_preysize_15, gam_preysize_15)
-anova(lm_preysize_rec, gam_preysize_rec)
+Preysize_all <- rbind(SC_join, Winkler_join)
+
+mod <- lm(Preysize ~ Pikesize * Sample, data = Preysize_all)
+anova(mod)
+summary(mod)
+emtrends(mod, pairwise ~ Sample, var = "Pikesize")
 
 Sizerelation <- ggplot()+
   geom_point(data = SC_all, aes(pike_TL_mm/10, prey_length_mm/10, colour = "Recent"))+
@@ -2513,7 +2929,7 @@ Sizerelation <- ggplot()+
   geom_smooth(data = Winkler_preysize_past, aes(Pike_TL_cm,Prey_TL_cm, colour = "Past", fill = "Past"), method = "lm")+
   geom_smooth(data = Winkler_preysize_15, aes(Pike_TL_cm, Prey_TL_cm,  colour = "Spring 2015", fill = "Spring 2015"), method = "lm")+
   labs(x = "Pike total length (cm)",
-       y = "Prey total length (cm)",
+       y = "Prey standard length (cm)",
        fill = "Sample",
        colour = "Sample")+
   scale_y_continuous(breaks = seq(0, 55, 5))+
@@ -2532,6 +2948,94 @@ ggsave("Figures/Predator-prey-length.png", Sizerelation, width = 16, height = 12
 
 ```
 
+# Prey fish biomass
+
+```{r trawl data analysis, include=FALSE, eval=FALSE}
+rm(list = ls())
+
+# Trawl data Barther Bodden, abundance/biomass per hectar, juvenile and small fish up to 10 cm TL, 5 mm mesh size
+Trawls <- fread("Data/Prey/Trawldata_1983-2013.CSV")
+
+cols_to_scale <- c(4:28, which(names(Trawls) == "Biomass_per_ha"))
+Trawls[, (cols_to_scale) := lapply(.SD, scale), .SDcols = cols_to_scale]
+
+# basic linear model
+lm_mod <- lm(Biomass_per_ha ~ Year, data = Trawls)
+
+# segmented model (with initial guess)
+seg_mod <- segmented(lm_mod, seg.Z = ~Year, psi = list(Year = 1995))
+summary(seg_mod)
+seg_mod$psi
+
+plot(Trawls$Year, Trawls$Biomass_per_ha, pch = 16)
+plot(seg_mod, add = TRUE, col = "red")
+
+bp <- breakpoints(Biomass_per_ha ~ Year, data = Trawls)
+summary(bp)
+
+breakpoints(bp)
+Trawls$Year[breakpoints(bp)$breakpoints]
+
+# Biomass
+bp_bio <- breakpoints(Biomass_per_ha ~ Year, data = Trawls)
+
+# Abundance
+bp_ind <- breakpoints(Ind_ha ~ Year, data = Trawls)
+
+Trawls$Year[breakpoints(bp_bio)$breakpoints]
+Trawls$Year[breakpoints(bp_ind)$breakpoints]
+
+#plot
+
+
+plot_cols1 <- c("Ind_ha", "Biomass_per_ha")
+plot_cols2 <- c("C.harengus", "R.rutilus", "P.fluviatilis", "P.flesus", "G.cernua", "N.melanostomus", "S.lucioperca", "G.aculeatus")
+
+# make long table
+Trawls_long1 <- melt(Trawls, id.vars = "Year", measure.vars = plot_cols1, variable.name = "Variable", value.name = "z")
+Trawls_long2 <- melt(Trawls, id.vars = "Year", measure.vars = plot_cols2, variable.name = "Variable", value.name = "z")
+  
+Trawlplot1 <- ggplot(Trawls_long1, aes(x = Year, y = z, colour = Variable)) +
+  geom_point(alpha = 0.6, size = 1) +
+  geom_smooth(method = "loess", se = TRUE, linewidth = 0.8) +
+  geom_vline(xintercept = 1989, linetype = "dashed", colour = "red", linewidth = 0.8) +
+  facet_wrap(~ Variable, scales = "free_y", labeller = labeller(Variable = c("Biomass_per_ha" = "Total biomass"))) +
+  scale_colour_manual(values = c("Ind_ha" = "#004643", "Biomass_per_ha" = "darkred"))+
+  theme_classic() +
+  labs(x = "Year", y = "z-scored abundance/biomass (Ind/kg per ha)")+
+  theme(legend.position = "none",
+        panel.grid.major.y = element_line(colour = "lightgrey", linewidth = 0.5),
+        plot.title = element_text(size = 10, colour = "black"),
+        axis.text = element_text(size = 10, colour = "black"),
+        axis.title = element_text(size = 10, colour = "black"))
+
+
+Trawlplot2 <- ggplot(Trawls_long2, aes(x = Year, y = z, colour = Variable)) +
+  geom_point(alpha = 0.6, size = 1) +
+  geom_smooth(method = "loess", se = TRUE, linewidth = 0.8) +
+  facet_wrap(~ Variable, scales = "free_y", labeller = labeller(Variable = c("C.harengus" = "C. harengus", 
+                                                                             "R.rutilus" = "R. rutilus",
+                                                                             "P.fluviatilis" = "P. fluviatilis", 
+                                                                             "P.flesus" = "P. flesus",
+                                                                             "G.cernua" = "G. cernua", 
+                                                                             "N.melanostomus"= "N. melanostomus",
+                                                                             "S.lucioperca" = "S. lucioperca",
+                                                                             "G.aculeatus" = "G.aculeatus",
+                                                                             "Ind_ha" = "Total abundance"))) +
+  scale_colour_manual(values = c("C.harengus" = "#1B9E77", "R.rutilus" = "#66A61E", "P.fluviatilis" = "#D95F02", "Z.viviparus" = "#7570B3", "P.flesus" = "#E7298A", 
+                    "G.cernua" = "#E6AB02", "N.melanostomus" = "cyan", "S.lucioperca" = "#A6761D", "G.aculeatus" = "black"))+
+  theme_classic() +
+  labs(x = "Year", y = "z-scored abundance (Ind/ha)")+
+  theme(legend.position = "none",
+        panel.grid.major.y = element_line(colour = "lightgrey", linewidth = 0.5),
+        plot.title = element_text(size = 10, colour = "black"),
+        axis.text = element_text(size = 10, colour = "black"),
+        axis.title = element_text(size = 10, colour = "black"))
+
+Trawlfig <- cowplot::plot_grid(Trawlplot1, Trawlplot2, ncol = 1)
+
+ggsave("Figures/Trawldata.png", Trawlfig, width = 16, height = 20, units = "cm", dpi = 600, bg = "white")
+```
 
 # Isotope analysis
 
@@ -2705,7 +3209,7 @@ Prey2 <- Prey %>%
             d15N, d13C, d34S) %>%
   filter(Species %in% c("C.harengus", "C. harengus_historic", "R.rutilus", "R. rutilus_historic",
                                   "P.fluviatilis", "P.fluviatilis_historic", "N.melanostomus", "P.flesus",
-                                  "Z.viviparus", "S.lucioperca", "G.cernua", "B.bjoerkna"))
+                                  "Z.viviparus", "S.lucioperca", "G.cernua"))
 
 Pike <- rbind(Pike_recent, Pike_historic)
 
@@ -2733,7 +3237,7 @@ Pike$Species <- as.factor(Pike$Species)
 
 descriptiveprey$Sp <- fct_relevel(descriptiveprey$Sp, "C.harengus", "C. harengus_historic", "R.rutilus", "R. rutilus_historic",
                                   "P.fluviatilis", "P.fluviatilis_historic", "N.melanostomus", "P.flesus",
-                                  "Z.viviparus", "S.lucioperca", "G.cernua", "B.bjoerkna")
+                                  "Z.viviparus", "S.lucioperca", "G.cernua")
 
 #Biplot by species
 colorBlindBlack8  <- c("#00BFB2", "cyan", "#D95F02", "darkorange", "brown4", "red", "#A6761D", "#004643",
@@ -2750,9 +3254,15 @@ CN <- ggplot()+
   geom_line(data = descriptiveprey, aes(d13C, d15N, col = Sp), linewidth = 0.8, alpha = 0)+
   labs(fill = "Pike sample", col = "Prey species")+
   theme_bw()+xlab(delta^"13"~"C(\u2030)")+ylab(delta^"15"~"N(\u2030)")+
-  scale_colour_manual(breaks = levels(descriptiveprey$Sp), 
-                      values=colorBlindBlack8,
-                      labels = levels(descriptiveprey$Sp))+
+  scale_colour_manual(values=c("C.harengus" = "#1B9E77", "C. harengus_historic" = "#004643", "R.rutilus" = "#66A61E", 
+                              "R. rutilus_historic" = "darkgreen", "P.fluviatilis" = "#D95F02", "P.fluviatilis_historic" = "darkred",
+                              "Z.viviparus" = "#7570B3", "P.flesus" = "#E7298A", "G.cernua" = "#E6AB02", "N.melanostomus" = "cyan", 
+                              "S.lucioperca" = "#A6761D"),
+                      labels = c("C.harengus" = "C. harengus", "C. harengus_historic" = "Historic C. harengus", "R.rutilus" = "R. rutilus", 
+                              "R. rutilus_historic" = "Historic R. rutilus", "P.fluviatilis" = "P. fluviatilis", 
+                              "P.fluviatilis_historic" = "Historic P. fluviatilis", "Z.viviparus" = "Z. viviparus", 
+                              "P.flesus" = "P. flesus", "G.cernua" = "G. cernua", "N.melanostomus" = "N. melanostomus", 
+                              "S.lucioperca" = "S. luciuperca"))+
   scale_fill_manual(breaks = c("Historic", "Recent"), 
                     values = c("#00BFB2","#C5D86D"),
                     labels = c("Historic pike", "Recent pike"))+
@@ -2774,9 +3284,15 @@ CS <- ggplot()+
   geom_line(data = descriptiveprey, aes(d13C, d34S, col = Sp), linewidth = 0.8, alpha = 0)+
   labs(fill = "Pike sample", col = "Prey species")+
   theme_bw()+xlab(delta^"13"~"C(\u2030)")+ylab(delta^"34"~"S(\u2030)")+
-  scale_colour_manual(breaks = levels(descriptiveprey$Sp), 
-                      values=colorBlindBlack8,
-                      labels = levels(descriptiveprey$Sp))+
+  scale_colour_manual(values=c("C.harengus" = "#1B9E77", "C. harengus_historic" = "#004643", "R.rutilus" = "#66A61E", 
+                              "R. rutilus_historic" = "darkgreen", "P.fluviatilis" = "#D95F02", "P.fluviatilis_historic" = "darkred",
+                              "Z.viviparus" = "#7570B3", "P.flesus" = "#E7298A", "G.cernua" = "#E6AB02", "N.melanostomus" = "cyan", 
+                              "S.lucioperca" = "#A6761D"),
+                      labels = c("C.harengus" = "C. harengus", "C. harengus_historic" = "Historic C. harengus", "R.rutilus" = "R. rutilus", 
+                              "R. rutilus_historic" = "Historic R. rutilus", "P.fluviatilis" = "P. fluviatilis", 
+                              "P.fluviatilis_historic" = "Historic P. fluviatilis", "Z.viviparus" = "Z. viviparus", 
+                              "P.flesus" = "P. flesus", "G.cernua" = "G. cernua", "N.melanostomus" = "N. melanostomus", 
+                              "S.lucioperca" = "S. luciuperca"))+
   scale_fill_manual(breaks = c("Historic", "Recent"), 
                     values = c("#00BFB2","#C5D86D"),
                     labels = c("Historic pike", "Recent pike"))+
@@ -2798,9 +3314,15 @@ NS <- ggplot()+
   geom_line(data = descriptiveprey, aes(d15N, d34S, col = Sp), linewidth = 0.8, alpha = 0)+
   labs(fill = "Pike sample", col = "Prey species")+
   theme_bw()+xlab(delta^"15"~"N(\u2030)")+ylab(delta^"34"~"S(\u2030)")+
-  scale_colour_manual(breaks = levels(descriptiveprey$Sp), 
-                      values=colorBlindBlack8,
-                      labels = levels(descriptiveprey$Sp))+
+  scale_colour_manual(values=c("C.harengus" = "#1B9E77", "C. harengus_historic" = "#004643", "R.rutilus" = "#66A61E", 
+                              "R. rutilus_historic" = "darkgreen", "P.fluviatilis" = "#D95F02", "P.fluviatilis_historic" = "darkred",
+                              "Z.viviparus" = "#7570B3", "P.flesus" = "#E7298A", "G.cernua" = "#E6AB02", "N.melanostomus" = "cyan", 
+                              "S.lucioperca" = "#A6761D"),
+                      labels = c("C.harengus" = "C. harengus", "C. harengus_historic" = "Historic C. harengus", "R.rutilus" = "R. rutilus", 
+                              "R. rutilus_historic" = "Historic R. rutilus", "P.fluviatilis" = "P. fluviatilis", 
+                              "P.fluviatilis_historic" = "Historic P. fluviatilis", "Z.viviparus" = "Z. viviparus", 
+                              "P.flesus" = "P. flesus", "G.cernua" = "G. cernua", "N.melanostomus" = "N. melanostomus", 
+                              "S.lucioperca" = "S. luciuperca"))+
   scale_fill_manual(breaks = c("Historic", "Recent"), 
                     values = c("#00BFB2","#C5D86D"),
                     labels = c("Historic pike", "Recent pike"))+
@@ -2813,9 +3335,10 @@ NS <- ggplot()+
   guides(colour = guide_legend(override.aes = list(fill = NA, linewidth = 0.8)))
 
 
-Ecopike <- ggarrange(CN, CS, NS, ncol = 3, nrow = 1, common.legend = T, labels = c("A", "B", "C"))
+Ecopike <- ggarrange(CN, CS, NS, ncol = 3, nrow = 1, common.legend = T)
 
 ggsave("Figures/Biplot-historic-vs-Recent.png", Ecopike, width = 16, height = 6, units = "cm", dpi = 600, bg = "white")
+saveRDS(Ecopike, "Data/Pike/Biplot-figure.rds")
 ```
 
 ```{r isotope modelling, include=FALSE, eval=FALSE}
@@ -2970,14 +3493,14 @@ Pikedata <- Pikemaster%>%
 plot_theme <- theme(panel.grid.major = element_line(linewidth = .3, colour = "lightgrey"),
         legend.position = "none",
         legend.background = element_blank(),
-        legend.box.background = element_rect(),
-        axis.line = element_line(linewidth = 1, colour = "black", linetype = 1),
+        legend.box.background = element_blank(),
+        axis.line = element_line(linewidth = 0.5, colour = "black", linetype = 1),
         axis.ticks = element_line(size = 1, colour = "black"),
         axis.text = element_text(size = 10, colour = "black"),
         axis.title.y = element_text(size = 10, colour = "black"),
-        axis.title.x = element_blank(),
-        legend.text = element_text(size = 15, colour = "black"),
-        legend.title = element_text(size = 15, colour = "black"),
+        axis.title.x = element_text(size = 10, colour = "black"),
+        legend.text = element_text(size = 10, colour = "black"),
+        legend.title = element_text(size = 10, colour = "black"),
         legend.key.size = unit(1,"line"))
 
 Carb <- ggplot(Pikedata, aes(TL_cm, d13C, colour = Sample))+
@@ -3010,11 +3533,88 @@ Sulf <- ggplot(Pikedata, aes(TL_cm, d34S, colour = Sample))+
   theme_classic()+
   plot_theme
 
-Isos <- ggarrange(Carb, Nitro, Sulf, nrow = 1, common.legend = TRUE)
+Isos <- ggarrange(Carb, Nitro, Sulf, nrow = 1, common.legend = TRUE, legend = "bottom")
+Isos1 <- annotate_figure(Isos, top = text_grob("Body-size specific pike isotope values", size = 15, just = 0.5))
 
-Isoplots <- annotate_figure(Isos, bottom = text_grob("Total length (cm)"))
+Biplot <- readRDS("Data/Pike/Biplot-figure.rds")
+Biplot1 <- annotate_figure(Biplot, top = text_grob("Isotope biplots for pike and prey fish", size = 15, just = 0.5))
 
-ggsave("Figures/Sulfur-vs-TL_historic-vs-Recent.png", Isoplots, width = 32, height = 10, units = "cm", dpi = 600, bg = "white")
+Isoall <- ggarrange(Biplot1, Isos1, ncol = 1)
+ggsave("Figures/Isotopes_historic-vs-Recent.png", Isoall, width = 16, height = 16, units = "cm", dpi = 600, bg = "white")
+```
+
+```{r isotope figures genotypes, include=FALSE, eval=FALSE}
+rm(list = ls())
+
+Pikemaster <- fread("Data/Pike/Pikemaster.csv")
+Prey_all <- fread("Data/Prey/Prey-data-all.csv")
+
+Pikedata <- Pikemaster%>%
+  filter(Genotype %in% c(1, 2, 3, 4))%>%
+  transmute(Fish_ID, 
+            TL_cm = TL_mm/10, 
+            Sample, Area, Genotype, d13C_muscle, d15N_muscle, d34S_muscle, d13C_scale, d15N_scale, d34S_scale) %>%
+  mutate(d13C = case_when(is.na(d13C_muscle) ~ d13C_scale,
+                          TRUE ~ d13C_muscle),
+         d15N = case_when(is.na(d15N_muscle) ~ d15N_scale,
+                          TRUE ~ d15N_muscle),
+         d34S = case_when(is.na(d34S_muscle) ~ d34S_scale,
+                          TRUE ~ d34S_muscle))%>%
+  drop_na(d34S) %>%
+  distinct()
+
+plot_theme <- theme(panel.grid.major = element_line(linewidth = .3, colour = "lightgrey"),
+        legend.position = "none",
+        legend.background = element_blank(),
+        legend.box.background = element_blank(),
+        axis.line = element_line(linewidth = 0.5, colour = "black", linetype = 1),
+        axis.ticks = element_line(size = 1, colour = "black"),
+        axis.text = element_text(size = 10, colour = "black"),
+        axis.title.y = element_text(size = 10, colour = "black"),
+        axis.title.x = element_text(size = 10, colour = "black"),
+        legend.text = element_text(size = 10, colour = "black"),
+        legend.title = element_text(size = 10, colour = "black"),
+        legend.key.size = unit(1,"line"))
+
+geno_labels <- c("1" = "Genotype 1", "2" = "Genotype 2", "3" = "Genotype 3", "4" = "Genotype 4")
+
+Carb <- ggplot(Pikedata, aes(TL_cm, d13C, colour = Sample))+
+  geom_point(size = .3)+
+  geom_smooth(method = "gam", linewidth = .3)+
+  scale_color_manual(breaks = c("Historic","Recent"),
+                    values = c("#00BFB2","#C5D86D"),
+                    labels = c("Historic (N = 130)", "Recent (N = 519)"))+
+  facet_wrap(~Genotype, nrow = 1, labeller = labeller(Genotype = geno_labels))+
+  labs(x = "Total length (cm)", y=expression(delta^"13"~"C(\u2030)"), fill="Sample")+
+  theme_classic()+
+  plot_theme
+
+Nitro <- ggplot(Pikedata, aes(TL_cm, d15N, colour = Sample))+
+  geom_point(size = .3)+
+  geom_smooth(method = "lm", linewidth = 0.3)+
+  scale_color_manual(breaks = c("Historic","Recent"),
+                    values = c("#00BFB2","#C5D86D"),
+                    labels = c("Historic (N = 130)", "Recent (N = 519)"))+
+  facet_wrap(~Genotype, nrow = 1, labeller = labeller(Genotype = geno_labels))+
+  labs(x = "Total length (cm)", y=expression(delta^"15"~"N(\u2030)"), fill="Sample")+
+  theme_classic()+
+  plot_theme
+
+Sulf <- ggplot(Pikedata, aes(TL_cm, d34S, colour = Sample))+
+  geom_point(size = .3)+
+  geom_smooth(method = "gam", linewidth = 0.3)+
+  scale_color_manual(breaks = c("Historic","Recent"),
+                    values = c("#00BFB2","#C5D86D"),
+                    labels = c("Historic (N = 130)", "Recent (N = 519)"))+
+  facet_wrap(~Genotype, nrow = 1, labeller = labeller(Genotype = geno_labels))+
+  labs(x = "Total length (cm)", y=expression(delta^"34"~"S(\u2030)"), fill="Sample")+
+  theme_classic()+
+  plot_theme
+
+Isos <- ggarrange(Carb, Nitro, Sulf, ncol = 1, common.legend = TRUE, legend = "bottom")
+Isos1 <- annotate_figure(Isos, top = text_grob("Body-size specific pike isotope values", size = 15, just = 0.5))
+
+ggsave("Figures/Isotopes_historic-vs-Recent-genotypes.png", Isos1, width = 16, height = 12, units = "cm", dpi = 600, bg = "white")
 ```
 
 
