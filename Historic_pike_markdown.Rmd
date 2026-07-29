@@ -11,6 +11,7 @@ knitr::opts_chunk$set(echo = TRUE)
 
 ```{r packages, include=FALSE}
 library(data.table)
+library(readxl)
 library(scales)
 library(tidyverse)
 library(ggplot2)
@@ -24,6 +25,7 @@ library(plyr)
 library(FSA)
 library(terra)
 library(maps)
+library(sf)
 library(emmeans)
 library(segmented)
 library(strucchange)
@@ -220,7 +222,7 @@ Pikeages_add2 <- Scaleread_addadd2 %>%
   transmute(fish_ID = Fish_ID,
             quality, age, cohort, pisc, I, year, increment,
             file_name = NA,
-            capt_date = as.Date(parse_date_time(Date, "dmy")),
+            capt_date = as.IDate(parse_date_time(Date, "dmy")),
             TL_mm = Total_Length_mm,
             weight = Weight_g,
             sex = Sex,
@@ -430,7 +432,7 @@ substrRight <- function(x, n){
 geneticsdata2 <- geneticsdata%>%
   filter(str_detect(V1, "BH"))
 
-#Genotypes: 1 = brackish 1; 1 = brackish 2; 2 = brackish 3; 3 = freshwater/anadromous; 4 = freshwater
+#Genotypes: 1 = brackish 1; 2 = brackish 2; 3 = freshwater/anadromous; 4 = freshwater
 Genotypes <- geneticsdata2%>%
   transmute(ID=paste0(sub("_","-",str_extract(V1, "BH_\\d{5}"))),
             cluster1 = as.numeric(V2)+as.numeric(V3),
@@ -457,12 +459,83 @@ Pikemaster6 <- Pikemaster5 %>%
   left_join(Genotypes3, by = "Fish_ID")%>%
   mutate(Genotype = case_when(is.na(Genotype) == TRUE ~ Genotype2,
                               TRUE ~ Genotype))%>%
-  select(!Genotype2) %>%
   filter(Length_back > 0)
 
 
 fwrite(Pikemaster6, "Data/Pike/Pikemaster.csv")
 ```
+
+```{r genotype frequencies historic vs present, include=FALSE, eval=FALSE}
+rm(list = ls())
+
+# --- Genotyp-Häufigkeiten nach Sample (Historic/Recent) ---
+Pikemaster <- fread("Data/Pike/Pikemaster.csv")
+
+genotype_labels <- c(
+  "1" = "Brackish 1",
+  "2" = "Brackish 2",
+  "3" = "Freshwater/anadromous",
+  "4" = "Freshwater",
+  "0" = "Not assigned"
+)
+
+genotype_colors <- c(
+  "Brackish 1"             = "#004643",
+  "Brackish 2"             = "#F1C40F",
+  "Freshwater/anadromous"  = "#00BFB2",
+  "Freshwater"             = "#C5D86D",
+  "Not assigned"           = "grey2"
+)
+
+Genotype_freq <- Pikemaster %>%
+  dplyr::filter(!is.na(Genotype), !is.na(Sample)) %>%
+  dplyr::mutate(Genotype_label = dplyr::recode(as.character(Genotype), !!!genotype_labels),
+                Genotype_label = factor(Genotype_label, levels = names(genotype_colors))) %>%
+  dplyr::count(Sample, Genotype_label, name = "n", .drop = FALSE) %>%
+  dplyr::group_by(Sample) %>%
+  dplyr::mutate(Proportion = n / sum(n)) %>%
+  dplyr::arrange(Sample, Genotype_label) %>%
+  dplyr::mutate(csum = rev(cumsum(rev(Proportion))),
+                pos1 = Proportion / 2 + dplyr::lead(csum, 1),
+                pos = dplyr::case_when(is.na(pos1) ~ Proportion / 2, TRUE ~ pos1)) %>%
+  dplyr::ungroup()
+
+GenotypePlot <- ggplot(Genotype_freq, aes(x = "", y = Proportion, fill = Genotype_label)) +
+  geom_bar(stat = "identity", width = 1) +
+  coord_polar(theta = "y") +
+  geom_label_repel(aes(y = pos, label = scales::percent(Proportion, accuracy = 0.1)),
+                    nudge_x = 0.6, size = 2.5, show.legend = FALSE, fill = "white") +
+  facet_wrap(~ Sample) +
+  scale_fill_manual(values = genotype_colors, name = "Genotype") +
+  theme_void() +
+  theme(legend.position = "bottom",
+        strip.text = element_text(size = 15, colour = "black"),
+        legend.text = element_text(size = 10),
+        legend.title = element_text(size = 10))
+
+ggsave("Figures/Genotype_frequencies.png", GenotypePlot, width = 16, height = 10, units = "cm", dpi = 600, bg = "white")
+
+Genotype_table <- Pikemaster %>%
+  dplyr::filter(!is.na(Genotype), !is.na(Sample)) %>%
+  dplyr::mutate(Genotype_label = dplyr::recode(as.character(Genotype), !!!genotype_labels),
+                Genotype_label = factor(Genotype_label, levels = names(genotype_colors))) %>%
+  dplyr::filter(Genotype_label != "Freshwater") %>%
+  dplyr::mutate(Genotype_label = forcats::fct_drop(Genotype_label)) %>%
+  dplyr::count(Sample, Genotype_label, name = "n", .drop = FALSE) %>%
+  tidyr::pivot_wider(names_from = Genotype_label, values_from = n, values_fill = 0) %>%
+  tibble::column_to_rownames("Sample") %>%
+  as.matrix()
+
+Genotype_table
+
+chisq_genotype <- chisq.test(Genotype_table)
+chisq_genotype
+
+chisq_genotype$expected
+
+chisq_genotype$stdres
+```
+
 
 ```{r join age readings with isotope data, include=FALSE, eval=FALSE}
 #Create overview list of pike for which SI data and scale readings exist to identify fish that need SI reading
@@ -485,7 +558,8 @@ Isopike2 <- Isopike%>%
   distinct()
 
 Pikemaster2 <- Pikemaster %>%
-  left_join(Isopike2, by = "Fish_ID")
+  left_join(Isopike2, by = "Fish_ID")%>%
+  dplyr::select(!Genotype2)
 
 #join genotypes
 #Load STRUCTURE output file
@@ -499,23 +573,24 @@ substrRight <- function(x, n){
 geneticsdata2 <- geneticsdata%>%
   filter(str_detect(V1, "BH"))
 
-#Genotypes: 1 = brackish 1; 2 = brackish 2; 3 = freshwater/anadromous; 4 = brackish 3; 5 = freshwater
+#Genotypes: 1 = brackish 1; 2 = brackish 2; 3 = freshwater/anadromous; 4 = freshwater
 Genotypes <- geneticsdata2%>%
   transmute(ID=paste0(sub("_","-",substrRight(V1,8))),
-            cluster1 = as.numeric(V2),
-            cluster2 = as.numeric(V3),
+            cluster1 = as.numeric(V2)+as.numeric(V3),
+            cluster2 = as.numeric(V5),
             cluster3 = as.numeric(V4),
-            cluster4 = as.numeric(V5),
-            cluster5 = as.numeric(V6))%>%
+            cluster4 = as.numeric(V6))%>%
   drop_na()
 
 
-Genotypes$clust <- apply(Genotypes[,c(2,3,4,5,6)], 1, FUN = which.max)
-Genotypes$clustval <- apply(Genotypes[,c(2,3,4,5,6)], 1, FUN = max)
+Genotypes$clust <- apply(Genotypes[,c(2,3,4,5)], 1, FUN = which.max)
+Genotypes$clustval <- apply(Genotypes[,c(2,3,4,5)], 1, FUN = max)
 
 Genotypes2 <- Genotypes%>%
   mutate(Genotype = case_when(clustval < 0.5 ~ "0",
                             TRUE~as.character(clust)))
+
+Genotypes2$Genotype <- fct_relevel(Genotypes2$Genotype, "4", "3", "1", "2", "0")
 
 Genotypes3 <- Genotypes2%>%
   transmute(Fish_ID = ID, Genotype = Genotype)
@@ -1619,6 +1694,96 @@ Growthdata3 <- Growthdata2 %>%
 fwrite(Growthdata3, "Data/Pike/Pikedata_agespecmodel.csv")
 ```
 
+
+```{r plot environmental variables for appenmdix, include=FALSE, eval=FALSE}
+rm(list = ls())
+
+Growthdata3 <- fread("Data/Pike/Pikedata_agespecmodel.csv")
+LUNGdata <- fread("Data/Environment/Lungdata-monthly-means.csv")
+GDDdata <- fread("Data/Environment/GDD_Bodden.csv")
+
+area_zone_lookup <- function(area) {
+  dplyr::case_when(area %in% c("KB","SB","BEZ","BAT","S","GB","WB","WRB","BEG","GJB","NRB","U","VB") ~ "Mesohaline",
+                    area %in% c("P","SAB","DZB","KJB") ~ "Oligohaline",
+                    TRUE ~ "Freshwater")
+}
+
+LUNGdata_years <- LUNGdata %>%
+  dplyr::filter(!is.na(Area)) %>%
+  dplyr::mutate(Zone = area_zone_lookup(Area)) %>%
+  dplyr::group_by(Year, Zone) %>%
+  dplyr::reframe(Secchi_m = mean(Secchi_m, na.rm = TRUE),
+                 Chla_mg_m3 = mean(Chla_mg_m3, na.rm = TRUE),
+                 Total_N = mean(Total_N, na.rm = TRUE),
+                 Total_P = mean(Total_P, na.rm = TRUE),
+                 SAL_PSU = mean(SAL_PSU, na.rm = TRUE),
+                 SAL_SD = mean(SAL_SD, na.rm = TRUE),
+                 WT_Celsius = mean(WT_Celsius, na.rm = TRUE)) %>%
+  dplyr::ungroup() %>%
+  dplyr::distinct()
+
+env_continuous_vars <- c("Secchi_m","Chla_mg_m3","Total_N","Total_P","SAL_PSU","SAL_SD","WT_Celsius")
+
+env_long <- LUNGdata_years %>%
+  tidyr::pivot_longer(cols = dplyr::all_of(env_continuous_vars), names_to = "Variable", values_to = "value") %>%
+  dplyr::transmute(Year, Area = Zone, Variable, value)
+
+gdd_long <- GDDdata %>%
+  dplyr::transmute(Year, Area = NA_character_, Variable = "GDD", value = GDD)
+
+# --- GIndex: yearly boxplots (full per-fish distribution per year), from Growthdata3 ---
+gindex_long <- Growthdata3 %>%
+  dplyr::transmute(Year = as.numeric(Year), Area = as.character(Area), Variable = "GIndex", value = GIndex)
+
+Env_multi <- dplyr::bind_rows(env_long, gdd_long) %>%
+  dplyr::mutate(Variable = factor(Variable,
+                                   levels = c("GIndex","Secchi_m","Chla_mg_m3","Total_N","Total_P",
+                                              "SAL_PSU","SAL_SD","WT_Celsius","GDD"))) %>%
+  filter(Area != "Freshwater")
+
+var_labels <- c(
+  "GIndex"     = "Growth index",
+  "Secchi_m"   = "Secchi depth (m)",
+  "Chla_mg_m3" = "Chl a (mg/m³)",
+  "Total_N"    = "Total N",
+  "Total_P"    = "Total P",
+  "SAL_PSU"    = "Salinity (PSU)",
+  "SAL_SD"     = "Salinity SD",
+  "WT_Celsius" = "Water temp (°C)",
+  "GDD"        = "Growing degree days"
+)
+
+area_colors <- c("Mesohaline" = "#0072B2", "Oligohaline" = "#E69F00", "Freshwater" = "#009E73")
+
+EnvMultiplot <- ggplot(Env_multi, aes(x = Year, y = value)) +
+  geom_boxplot(data = dplyr::filter(Env_multi, Variable == "GIndex"),
+               aes(x = Year, y = value, group = interaction(Year, Area), colour = Area),
+               position = position_dodge2(preserve = "single", padding = 0.2),
+               outlier.size = 0.5, linewidth = 0.4) +
+  geom_line(data = dplyr::filter(Env_multi, Variable %in% env_continuous_vars),
+            aes(colour = Area), linewidth = 0.6) +
+  geom_smooth(data = dplyr::filter(Env_multi, Variable %in% env_continuous_vars),
+              aes(colour = Area), method = "loess", se = TRUE, linewidth = 0.7) +
+  geom_line(data = dplyr::filter(Env_multi, Variable == "GDD"),
+            colour = "grey30", linewidth = 0.7) +
+  geom_vline(xintercept = 1989, linetype = "dashed", colour = "red", linewidth = 0.6) +
+  coord_cartesian(xlim = c(1976, 2022)) +
+  facet_wrap(~ Variable, scales = "free_y", ncol = 3, labeller = labeller(Variable = var_labels)) +
+  scale_colour_manual(values = area_colors, na.translate = FALSE) +
+  theme_classic() +
+  labs(x = "Year", y = NULL, colour = "Area") +
+  theme(legend.position = "bottom",
+        panel.grid.major.y = element_line(colour = "lightgrey", linewidth = 0.5),
+        strip.text = element_text(size = 10, colour = "black"),
+        plot.title = element_text(size = 10, colour = "black"),
+        axis.text = element_text(size = 9, colour = "black"),
+        axis.title = element_text(size = 10, colour = "black"),
+        legend.text = element_text(size = 9),
+        legend.title = element_text(size = 9))
+
+ggsave("Figures/Environment_Multiplot.png", EnvMultiplot, width = 20, height = 20, units = "cm", dpi = 600, bg = "white")
+```
+
 ```{r data exploration, include=FALSE, eval=FALSE}
 rm(list = ls())
 
@@ -2496,6 +2661,8 @@ palette_colors <- khroma::colour("discrete rainbow")(length(all_common_species))
 species_colors <- setNames(as.character(palette_colors), all_common_species)
 species_colors["Other"] <- "grey60"
 
+saveRDS(species_colors, "Data/Prey/Species-cols.rds")
+
 Prey_FO_recent <- Prey_FO_recent %>% dplyr::mutate(Species = factor(Species, levels = names(species_colors)))
 Prey_FO_past   <- Prey_FO_past   %>% dplyr::mutate(Species = factor(Species, levels = names(species_colors)))
 Prey_FO_15     <- Prey_FO_15     %>% dplyr::mutate(Species = factor(Species, levels = names(species_colors)))
@@ -2948,15 +3115,79 @@ ggsave("Figures/Predator-prey-length.png", Sizerelation, width = 16, height = 12
 
 ```
 
-# Prey fish biomass
+# Prey fish biomass, cormorants and other disasters
+
+```{r cormorant time series}
+rm(list = ls())
+
+# --- Kormoran-Daten & Bodden-Zentroide ---
+cormorant_bycolony <- read_excel("Data/Environment/Timeseries/Cormorant_data/cormorants_geo.xlsx", sheet = "zaehldaten")
+cormorant_geo <- read_excel("Data/Environment/Timeseries/Cormorant_data/cormorants_geo.xlsx", sheet = "geo") %>%
+  st_as_sf(coords = c("lon", "lat"), crs = "+proj=longlat +datum=WGS84")
+
+sf::sf_use_s2(FALSE)
+
+bodden_shape <- st_read("Data/Environment/Timeseries/Cormorant_data/mv_fishery_fanggebiete.shp", quiet = TRUE) %>%
+  st_transform(crs = "+proj=longlat +datum=WGS84") %>%
+  dplyr::filter(gewässerc %in% c("1", "2", "3", "4", "5a", "5b", "6", "8a", "8b")) %>%
+  dplyr::mutate(Gebiet = dplyr::case_when(gewässerc == "1" ~ "Stettiner Haff",
+                            gewässerc == "2" ~ "Peenestrom",
+                            gewässerc == "3" ~ "Greifswalder Bodden",
+                            gewässerc == "4" ~ "Kubitzer Bodden und Strelasund",
+                            gewässerc %in% c("5a", "5b") ~ "Westrügen und Gr. Jasmunder Bodden",
+                            gewässerc == "6" ~ "Kl. Jasmunder Bodden",
+                            gewässerc == "8a" ~ "Darß-Zingster Bodden West",
+                            gewässerc == "8b" ~ "Darß-Zingster Bodden Ost",
+                            TRUE ~ gewässerc)) %>%
+  dplyr::group_by(Gebiet) %>%
+  dplyr::summarize(geometry = st_union(geometry))
+
+bodden_cent <- st_centroid(bodden_shape)
+
+# --- Distanzmatrix: Kolonie <-> Bodden-Zentroid ---
+distmat <- st_distance(bodden_cent, cormorant_geo) %>% tibble::as_tibble()
+names(distmat) <- cormorant_geo$colony
+distmat$Gebiet <- bodden_cent$Gebiet
+
+distlong <- distmat %>%
+  tidyr::pivot_longer(cols = -Gebiet, values_to = "distance")
+
+# --- Distanzgewichteter Kormoran-Index je Gebiet & Jahr ---
+comorants_dist_weighted <- cormorant_bycolony %>%
+  tidyr::pivot_longer(cols = -year) %>%
+  dplyr::mutate(value = as.numeric(value)) %>%
+  na.omit() %>%
+  dplyr::left_join(distlong %>% dplyr::mutate(distance = as.numeric(distance)), by = "name") %>%
+  dplyr::group_by(year, Gebiet) %>%
+  dplyr::mutate(cormorants_weighted = sum(value / ((distance / 1000)^2))) %>%
+  dplyr::filter(!is.na(Gebiet)) %>%
+  dplyr::ungroup() %>%
+  dplyr::group_by(year, Gebiet) %>%
+  dplyr::summarize(cormorants_weighted = mean(cormorants_weighted), .groups = "drop") %>%
+  dplyr::arrange(Gebiet, year) %>%
+  dplyr::mutate(year = factor(year, levels = seq(1952, 2022, 1)),
+         Gebiet = factor(Gebiet)) %>%
+  tidyr::complete(year, Gebiet)
+
+comorants_dist_final <- comorants_dist_weighted %>%
+  ungroup()%>%
+  dplyr::bind_rows(comorants_dist_weighted %>%
+              dplyr::filter(Gebiet == "Darß-Zingster Bodden Ost") %>%
+              dplyr::group_by(year) %>%
+              dplyr::summarise(cormorants_weighted = mean(cormorants_weighted), .groups = "drop") %>%
+              dplyr::mutate(Gebiet = "Darß-Zingster Bodden Ost"))
+
+fwrite(comorants_dist_final, "Data/Environment/Timeseries/Cormorant_data/comorants_dist_weighted.csv")
+```
 
 ```{r trawl data analysis, include=FALSE, eval=FALSE}
 rm(list = ls())
 
 # Trawl data Barther Bodden, abundance/biomass per hectar, juvenile and small fish up to 10 cm TL, 5 mm mesh size
 Trawls <- fread("Data/Prey/Trawldata_1983-2013.CSV")
+cormorants_dist_final <- fread("Data/Environment/Timeseries/Cormorant_data/comorants_dist_weighted.csv")
 
-cols_to_scale <- c(4:28, which(names(Trawls) == "Biomass_per_ha"))
+cols_to_scale <- c(4:28)
 Trawls[, (cols_to_scale) := lapply(.SD, scale), .SDcols = cols_to_scale]
 
 # basic linear model
@@ -2985,47 +3216,95 @@ bp_ind <- breakpoints(Ind_ha ~ Year, data = Trawls)
 Trawls$Year[breakpoints(bp_bio)$breakpoints]
 Trawls$Year[breakpoints(bp_ind)$breakpoints]
 
-#plot
+# --- plot data prep ---
+plot_cols1 <- c("Biomass_per_ha")
+plot_cols2 <- c(
+  "C.harengus", 
+  "R.rutilus", 
+  "P.fluviatilis", 
+  "P.flesus", 
+  "G.cernua", 
+  "O.eperlanus", 
+  "N.melanostomus", 
+  "S.lucioperca", 
+  "G.aculeatus", 
+  "P.pungitius"
+  )
 
-
-plot_cols1 <- c("Ind_ha", "Biomass_per_ha")
-plot_cols2 <- c("C.harengus", "R.rutilus", "P.fluviatilis", "P.flesus", "G.cernua", "N.melanostomus", "S.lucioperca", "G.aculeatus")
-
-# make long table
 Trawls_long1 <- melt(Trawls, id.vars = "Year", measure.vars = plot_cols1, variable.name = "Variable", value.name = "z")
 Trawls_long2 <- melt(Trawls, id.vars = "Year", measure.vars = plot_cols2, variable.name = "Variable", value.name = "z")
-  
+
+# --- Kormoran-Index für das Trawl-Gebiet (Datenaufbereitung siehe Cormorant-Chunk) ---
+cormorant_index <- cormorants_dist_final %>%
+  dplyr::filter(Gebiet == "Darß-Zingster Bodden Ost") %>%
+  dplyr::mutate(Year = as.numeric(as.character(year))) %>%
+  dplyr::select(Year, cormorants_weighted) %>%
+  dplyr::filter(!is.na(cormorants_weighted))
+
+trawl_year_range <- range(Trawls_long1$Year, na.rm = TRUE)
+cormorant_index <- cormorant_index %>%
+  dplyr::filter(Year >= trawl_year_range[1], Year <= trawl_year_range[2])
+
+biomass_range   <- range(Trawls_long1$z, na.rm = TRUE)
+cormorant_range <- range(cormorant_index$cormorants_weighted, na.rm = TRUE)
+
+scale_factor <- diff(biomass_range) / diff(cormorant_range)
+scale_offset <- biomass_range[1] - cormorant_range[1] * scale_factor
+
+# --- Trawlplot1: Biomass (kg/ha) + Kormoran-Index (2. y-Achse) ---
 Trawlplot1 <- ggplot(Trawls_long1, aes(x = Year, y = z, colour = Variable)) +
   geom_point(alpha = 0.6, size = 1) +
   geom_smooth(method = "loess", se = TRUE, linewidth = 0.8) +
   geom_vline(xintercept = 1989, linetype = "dashed", colour = "red", linewidth = 0.8) +
-  facet_wrap(~ Variable, scales = "free_y", labeller = labeller(Variable = c("Biomass_per_ha" = "Total biomass"))) +
-  scale_colour_manual(values = c("Ind_ha" = "#004643", "Biomass_per_ha" = "darkred"))+
+  geom_line(data = cormorant_index,
+            aes(x = Year, y = cormorants_weighted * scale_factor + scale_offset),
+            inherit.aes = FALSE, colour = "black", linewidth = 0.8) +
+  coord_cartesian(ylim = c(0, NA)) +
+  scale_y_continuous(
+    sec.axis = sec_axis(~ (. - scale_offset) / scale_factor,
+                         name = "Cormorant index (distance-weighted)")
+  ) +
+  scale_colour_manual(values = c("Biomass_per_ha" = "darkred")) +
   theme_classic() +
-  labs(x = "Year", y = "z-scored abundance/biomass (Ind/kg per ha)")+
+  labs(x = "Year", y = "Total biomass (kg/ha)") +
   theme(legend.position = "none",
         panel.grid.major.y = element_line(colour = "lightgrey", linewidth = 0.5),
         plot.title = element_text(size = 10, colour = "black"),
-        axis.text = element_text(size = 10, colour = "black"),
-        axis.title = element_text(size = 10, colour = "black"))
+        axis.text.y.left = element_text(size = 10, colour = "darkred"),
+        axis.title.y.left = element_text(size = 10, colour = "darkred"),
+        axis.line.y.left = element_line(colour = "darkred"),
+        axis.ticks.y.left = element_line(colour = "darkred"),
+        axis.text.y.right = element_text(size = 10, colour = "black"),
+        axis.title.y.right = element_text(size = 10, colour = "black"),
+        axis.line.y.right = element_line(colour = "black"))
 
+species_colors <- readRDS("Data/Prey/Species-cols.rds")
 
+species_name_lookup <- c(
+  "C.harengus"     = "C. harengus",
+  "R.rutilus"      = "R. rutilus",
+  "P.fluviatilis"  = "P. fluviatilis",
+  "P.flesus"       = "P. flesus",
+  "G.cernua"       = "G. cernua",
+  "N.melanostomus" = "N. melanostomus",
+  "S.lucioperca"   = "S. lucioperca",
+  "G.aculeatus"    = "G. aculeatus",
+  "A.tobianus"     = "A. tobianus",
+  "O.eperlanus"    = "O. eperlanus",
+  "P.pungitius"    = "P. pungitius"
+)
+
+Trawls_long2 <- Trawls_long2 %>%
+  dplyr::mutate(Variable = dplyr::recode(as.character(Variable), !!!species_name_lookup))
+
+# --- Trawlplot2: species abundances (z-scored) ---
 Trawlplot2 <- ggplot(Trawls_long2, aes(x = Year, y = z, colour = Variable)) +
   geom_point(alpha = 0.6, size = 1) +
   geom_smooth(method = "loess", se = TRUE, linewidth = 0.8) +
-  facet_wrap(~ Variable, scales = "free_y", labeller = labeller(Variable = c("C.harengus" = "C. harengus", 
-                                                                             "R.rutilus" = "R. rutilus",
-                                                                             "P.fluviatilis" = "P. fluviatilis", 
-                                                                             "P.flesus" = "P. flesus",
-                                                                             "G.cernua" = "G. cernua", 
-                                                                             "N.melanostomus"= "N. melanostomus",
-                                                                             "S.lucioperca" = "S. lucioperca",
-                                                                             "G.aculeatus" = "G.aculeatus",
-                                                                             "Ind_ha" = "Total abundance"))) +
-  scale_colour_manual(values = c("C.harengus" = "#1B9E77", "R.rutilus" = "#66A61E", "P.fluviatilis" = "#D95F02", "Z.viviparus" = "#7570B3", "P.flesus" = "#E7298A", 
-                    "G.cernua" = "#E6AB02", "N.melanostomus" = "cyan", "S.lucioperca" = "#A6761D", "G.aculeatus" = "black"))+
+  facet_wrap(~ Variable, scales = "free_y") +
+  scale_colour_manual(values = species_colors) +
   theme_classic() +
-  labs(x = "Year", y = "z-scored abundance (Ind/ha)")+
+  labs(x = "Year", y = "z-scored abundance (Ind/ha)") +
   theme(legend.position = "none",
         panel.grid.major.y = element_line(colour = "lightgrey", linewidth = 0.5),
         plot.title = element_text(size = 10, colour = "black"),
@@ -3036,6 +3315,43 @@ Trawlfig <- cowplot::plot_grid(Trawlplot1, Trawlplot2, ncol = 1)
 
 ggsave("Figures/Trawldata.png", Trawlfig, width = 16, height = 20, units = "cm", dpi = 600, bg = "white")
 ```
+
+```{r landings figure for appendix, include=FALSE, eval=FALSE}
+rm(list = ls())
+
+Landings <- fread("Data/Environment/Timeseries/Orig_fishery_data/all_species_catch_1976-2018.csv", encoding = "Latin-1")
+
+species_name_lookup2 <- c(
+  "Hering"     = "C. harengus",
+  "Plï¿½tze"     = "R. rutilus",
+  "Barsch"     = "P. fluviatilis",
+  "Kaulbarsch" = "G. cernua",
+  "Zander"     = "S. lucioperca"
+)
+
+Landings_darss <- Landings %>%
+  dplyr::filter(area == "Darsser Boddenkette",
+                species %in% names(species_name_lookup2)) %>%
+  dplyr::mutate(Species = dplyr::recode(species, !!!species_name_lookup2))
+
+species_colors <- readRDS("Data/Prey/Species-cols.rds")
+
+Landingsplot <- ggplot(Landings_darss, aes(x = year, y = catch, colour = Species)) +
+  geom_line(linewidth = 0.8) +
+  geom_point(size = 1) +
+  facet_wrap(~ Species, scales = "free_y") +
+  scale_colour_manual(values = species_colors) +
+  theme_classic() +
+  labs(x = "Year", y = "Landings") +
+  theme(legend.position = "none",
+        panel.grid.major.y = element_line(colour = "lightgrey", linewidth = 0.5),
+        plot.title = element_text(size = 10, colour = "black"),
+        axis.text = element_text(size = 10, colour = "black"),
+        axis.title = element_text(size = 10, colour = "black"))
+
+ggsave("Figures/Landings_Darsser-Boddenkette.png", Landingsplot, width = 16, height = 12, units = "cm", dpi = 600, bg = "white")
+```
+
 
 # Isotope analysis
 
