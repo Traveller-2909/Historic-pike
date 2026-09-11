@@ -29,6 +29,7 @@ library(sf)
 library(emmeans)
 library(segmented)
 library(strucchange)
+library(mgcv)
 library(brms)
 library(rstan)
 options(mc.cores = parallel::detectCores())
@@ -465,78 +466,6 @@ Pikemaster6 <- Pikemaster5 %>%
 fwrite(Pikemaster6, "Data/Pike/Pikemaster.csv")
 ```
 
-```{r genotype frequencies historic vs present, include=FALSE, eval=FALSE}
-rm(list = ls())
-
-# --- Genotyp-Häufigkeiten nach Sample (Historic/Recent) ---
-Pikemaster <- fread("Data/Pike/Pikemaster.csv")
-
-genotype_labels <- c(
-  "1" = "Brackish 1",
-  "2" = "Brackish 2",
-  "3" = "Freshwater/anadromous",
-  "4" = "Freshwater",
-  "0" = "Not assigned"
-)
-
-genotype_colors <- c(
-  "Brackish 1"             = "#004643",
-  "Brackish 2"             = "#F1C40F",
-  "Freshwater/anadromous"  = "#00BFB2",
-  "Freshwater"             = "#C5D86D",
-  "Not assigned"           = "grey2"
-)
-
-Genotype_freq <- Pikemaster %>%
-  dplyr::filter(!is.na(Genotype), !is.na(Sample)) %>%
-  dplyr::mutate(Genotype_label = dplyr::recode(as.character(Genotype), !!!genotype_labels),
-                Genotype_label = factor(Genotype_label, levels = names(genotype_colors))) %>%
-  dplyr::count(Sample, Genotype_label, name = "n", .drop = FALSE) %>%
-  dplyr::group_by(Sample) %>%
-  dplyr::mutate(Proportion = n / sum(n)) %>%
-  dplyr::arrange(Sample, Genotype_label) %>%
-  dplyr::mutate(csum = rev(cumsum(rev(Proportion))),
-                pos1 = Proportion / 2 + dplyr::lead(csum, 1),
-                pos = dplyr::case_when(is.na(pos1) ~ Proportion / 2, TRUE ~ pos1)) %>%
-  dplyr::ungroup()
-
-GenotypePlot <- ggplot(Genotype_freq, aes(x = "", y = Proportion, fill = Genotype_label)) +
-  geom_bar(stat = "identity", width = 1) +
-  coord_polar(theta = "y") +
-  geom_label_repel(aes(y = pos, label = scales::percent(Proportion, accuracy = 0.1)),
-                    nudge_x = 0.6, size = 2.5, show.legend = FALSE, fill = "white") +
-  facet_wrap(~ Sample) +
-  scale_fill_manual(values = genotype_colors, name = "Genotype") +
-  theme_void() +
-  theme(legend.position = "bottom",
-        strip.text = element_text(size = 15, colour = "black"),
-        legend.text = element_text(size = 10),
-        legend.title = element_text(size = 10))
-
-ggsave("Figures/Genotype_frequencies.png", GenotypePlot, width = 16, height = 10, units = "cm", dpi = 600, bg = "white")
-
-Genotype_table <- Pikemaster %>%
-  dplyr::filter(!is.na(Genotype), !is.na(Sample)) %>%
-  dplyr::mutate(Genotype_label = dplyr::recode(as.character(Genotype), !!!genotype_labels),
-                Genotype_label = factor(Genotype_label, levels = names(genotype_colors))) %>%
-  dplyr::filter(Genotype_label != "Freshwater") %>%
-  dplyr::mutate(Genotype_label = forcats::fct_drop(Genotype_label)) %>%
-  dplyr::count(Sample, Genotype_label, name = "n", .drop = FALSE) %>%
-  tidyr::pivot_wider(names_from = Genotype_label, values_from = n, values_fill = 0) %>%
-  tibble::column_to_rownames("Sample") %>%
-  as.matrix()
-
-Genotype_table
-
-chisq_genotype <- chisq.test(Genotype_table)
-chisq_genotype
-
-chisq_genotype$expected
-
-chisq_genotype$stdres
-```
-
-
 ```{r join age readings with isotope data, include=FALSE, eval=FALSE}
 #Create overview list of pike for which SI data and scale readings exist to identify fish that need SI reading
 #Script uses already processed data, will change when data is run through final data check of MS 3
@@ -700,13 +629,104 @@ Histo_iso_add <- Histopike %>%
 
 Pikemaster5 <- plyr::rbind.fill(Pikemaster4, Histo_iso_add)
 
-#fwrite(Pikemaster5, "Data/Pike/Pikemaster.csv")
+Pikemaster6 <- Pikemaster5 %>%
+  dplyr::mutate(Area = case_when(Area %in% c("NRB", "BAT", "S", "GB", "SB", "U", "KB", "WB", "BEG", "BEZ", "GJB", "VB", "DZB") ~ "Mesohaline",
+                                 Area %in% c("P", "KJB", "SAB") ~ "Oligohaline",
+                                 Area %in% c("Sehrowbach", "Barthe", "Peene", "KWB", "Duwenbeek", 
+                                             "Beek", "NHG", "Badendycksgraben", "Ziese", "Barthe/Peene") ~ "Freshwater",
+                                 TRUE ~ "NA")) %>%
+  filter(Area != "NA")
 
-Pikemaster6 <- Pikemaster %>%
+fwrite(Pikemaster6, "Data/Pike/Pikemaster.csv")
+
+Pikemaster7 <- Pikemaster %>%
   transmute(Fish_ID, Sample, Area)%>%
   distinct()
 
-table(Pikemaster6[Pikemaster6$Sample == "Recent",]$Area)
+table(Pikemaster7[Pikemaster7$Sample == "Recent",]$Area)
+```
+
+```{r genotype frequencies historic vs present, include=FALSE, eval=FALSE}
+rm(list = ls())
+
+# --- Genotyp-Häufigkeiten nach Sample (Historic/Recent) ---
+Pikemaster <- fread("Data/Pike/Pikemaster.csv")
+
+genotype_labels <- c(
+  "1" = "Brackish 1",
+  "2" = "Brackish 2",
+  "3" = "Freshwater/anadromous",
+  "4" = "Freshwater",
+  "0" = "Not assigned"
+)
+
+genotype_colors <- c(
+  "Brackish 1"             = "#004643",
+  "Brackish 2"             = "#F1C40F",
+  "Freshwater/anadromous"  = "#00BFB2",
+  "Freshwater"             = "#C5D86D",
+  "Not assigned"           = "grey2"
+)
+
+Genotype_freq <- Pikemaster[Pikemaster$Area != "Freshwater",] %>%
+  dplyr::transmute(Fish_ID, Sample, Genotype) %>%
+  distinct() %>%
+  dplyr::filter(!is.na(Genotype), !is.na(Sample)) %>%
+  dplyr::mutate(Genotype_label = dplyr::recode(as.character(Genotype), !!!genotype_labels),
+                Genotype_label = factor(Genotype_label, levels = names(genotype_colors))) %>%
+  dplyr::count(Sample, Genotype_label, name = "n", .drop = FALSE) %>%
+  dplyr::group_by(Sample) %>%
+  dplyr::mutate(Proportion = n / sum(n)) %>%
+  dplyr::arrange(Sample, Genotype_label) %>%
+  dplyr::mutate(csum = rev(cumsum(rev(Proportion))),
+                pos1 = Proportion / 2 + dplyr::lead(csum, 1),
+                pos = dplyr::case_when(is.na(pos1) ~ Proportion / 2, TRUE ~ pos1)) %>%
+  dplyr::ungroup()
+
+GenotypePlot <- ggplot(Genotype_freq, aes(x = "", y = Proportion, fill = Genotype_label)) +
+  geom_bar(stat = "identity", width = 1) +
+  coord_polar(theta = "y") +
+  geom_label_repel(aes(y = pos, label = scales::percent(Proportion, accuracy = 0.1)),
+                    nudge_x = 0.6, size = 2.5, show.legend = FALSE, fill = "white") +
+  facet_wrap(~ Sample) +
+  scale_fill_manual(values = genotype_colors, name = "Genotype") +
+  theme_void() +
+  theme(legend.position = "bottom",
+        strip.text = element_text(size = 15, colour = "black"),
+        legend.text = element_text(size = 8),
+        legend.title = element_text(size = 10))
+
+ggsave("Figures/Genotype_frequencies.png", GenotypePlot, width = 16, height = 10, units = "cm", dpi = 600, bg = "white")
+
+Genotype_prop <- Pikemaster[Pikemaster$Area != "Freshwater",] %>%
+  dplyr::transmute(Fish_ID, Sample, Genotype) %>%
+  distinct() %>%
+  dplyr::filter(!is.na(Genotype), !is.na(Sample)) %>%
+  dplyr::mutate(Genotype_label = dplyr::recode(as.character(Genotype), !!!genotype_labels),
+                Genotype_label = factor(Genotype_label, levels = names(genotype_colors))) %>%
+  dplyr::mutate(Genotype_label = forcats::fct_drop(Genotype_label)) %>%
+  dplyr::count(Sample, Genotype_label, name = "n", .drop = FALSE) %>%
+  dplyr::group_by(Sample) %>%
+  dplyr::mutate(Total = sum(n),
+                Proportion = n / Total) %>%
+  dplyr::ungroup()
+
+Genotype_prop
+
+Genotype_prop_wide <- Genotype_prop %>%
+  dplyr::select(Sample, Genotype_label, Proportion) %>%
+  tidyr::pivot_wider(names_from = Genotype_label, values_from = Proportion) %>%
+  dplyr::mutate(dplyr::across(-Sample, ~ scales::percent(.x, accuracy = 0.1)))
+
+Genotype_prop_wide
+
+# Differenz in Prozentpunkten (Recent - Historic) pro Genotyp
+Genotype_diff <- Genotype_prop %>%
+  dplyr::select(Sample, Genotype_label, Proportion) %>%
+  tidyr::pivot_wider(names_from = Sample, values_from = Proportion) %>%
+  dplyr::mutate(Diff_pp = (Recent - Historic) * 100)
+
+Genotype_diff
 ```
 
 # Growth analysis
@@ -1256,10 +1276,10 @@ Curve_pop_complex <- ggplot(data = samples[samples$area_id != 5,]) + #exclude fr
   geom_line(aes(x = Agei, y = median, color = area_id), linewidth = 2) + 
   geom_point(data = Growthtable1, aes(x = Age, y = Length_LI/10, color = Sample_bin), size = 1, alpha = .9) + 
   scale_x_continuous(breaks = seq(1,15,1), labels = c("1","","3","","5","","7","","9","","11","","13","","15"))+
-  scale_color_manual(breaks = c(1,2,3,4), values = c("#004643", "#C5D86D", "#00BFB2", "#F1C40F", "#AF3800"), 
-                     labels = c("Recent female (n = 400)", "Recent male (n = 362)", "Historic female (n = 338)", "Historic male (n = 197)"))+
-  scale_fill_manual(breaks = c(1,2,3,4), values = c("#004643", "#C5D86D", "#00BFB2", "#F1C40F", "#AF3800"), 
-                     labels = c("Recent female (n = 400)", "Recent male (n = 362)", "Historic female (n = 338)", "Historic male (n = 197)"))+
+  scale_color_manual(breaks = c(1,3,2,4), values = c("#004643", "#00BFB2", "#C5D86D", "#F1C40F", "#AF3800"), 
+                     labels = c("Recent female (n = 400)", "Historic female (n = 338)", "Recent male (n = 362)","Historic male (n = 197)"))+
+  scale_fill_manual(breaks = c(1,3,2,4), values = c("#004643", "#00BFB2", "#C5D86D", "#F1C40F", "#AF3800"), 
+                     labels = c("Recent female (n = 400)", "Historic female (n = 338)", "Recent male (n = 362)", "Historic male (n = 197)"))+
   labs(x="Age (years)", y="Total length (cm)", color = "Sample", fill = "Sample", title = "Sex-specific von Bertalanffy growth") + pl_theme
 
 ggsave("Figures/VB-curve_recent-vs-historic-vs-fresh.png", Curve_pop_complex, width = 15, height = 15, units = "cm", dpi = 600, bg = "white")
@@ -1683,9 +1703,7 @@ Growthdata3 <- Growthdata2 %>%
             Cohort = as.factor(Cohort),
             Year,
             Sex = as.factor(Sex),
-            Area = as.factor(case_when(Area %in% c("KB", "SB", "BEZ", "BAT", "S", "GB", "WB", "BEG", "GJB", "NRB", "U", "VB") ~ "Mesohaline",
-                                       Area %in% c("P", "SAB", "DZB", "KJB") ~ "Oligohaline",
-                                       TRUE ~ "Freshwater")),
+            Area = as.factor(Area),
             Pisc_mm,
             Genotype = as.factor(Genotype),
             GIndex, Secchi_m, Chla_mg_m3, Total_N, Total_P, SAL_PSU, SAL_SD, Months_highSAL, WT_Celsius, GDD)%>%
@@ -1695,7 +1713,7 @@ fwrite(Growthdata3, "Data/Pike/Pikedata_agespecmodel.csv")
 ```
 
 
-```{r plot environmental variables for appenmdix, include=FALSE, eval=FALSE}
+```{r plot environmental variables for appendix, include=FALSE, eval=FALSE}
 rm(list = ls())
 
 Growthdata3 <- fread("Data/Pike/Pikedata_agespecmodel.csv")
@@ -2130,7 +2148,7 @@ loo_compare(loo_alleffects2, loo_noSal, loo_noProd)
 rm(list = ls())
 
 Growthdata <- fread("Data/Pike/Pikedata_agespecmodel.csv") 
-Growthmodel <- read_rds("Data/GLMM_output/Model_fixed-hist_year-geno-interaction.rds")
+# Growthmodel <- read_rds("Data/GLMM_output/Model_fixed-hist_year-geno-interaction.rds")
 
 Growthdata <- Growthdata %>% 
   filter(GIndex > 0) %>% 
@@ -2151,27 +2169,27 @@ Growthdata <- Growthdata %>%
   filter(!Area %in% c("Peene", "Barthe", "Sehrowbach", "Duwenbeek", "Beek")) %>%
   distinct()
 
-newdata <- expand.grid(Lifeyear = 1:13,
-                       Sample = c("Historic", "Recent"),
-                       Genotype = c(1:4),
-                       Sex = c("f", "m"),
-                       Area = unique(Growthdata$Area))
+# newdata <- expand.grid(Lifeyear = 1:13,
+#                        Sample = c("Historic", "Recent"),
+#                        Genotype = c(1:4),
+#                        Sex = c("f", "m"),
+#                        Area = unique(Growthdata$Area))
+# 
+# pred <- fitted(Growthmodel,
+#                newdata = newdata,
+#                re_formula = NA,
+#                summary = TRUE)
 
-pred <- fitted(Growthmodel,
-               newdata = newdata,
-               re_formula = NA,
-               summary = TRUE)
+# plot_data <- cbind(newdata, pred)
 
-plot_data <- cbind(newdata, pred)
-
-plot_data2 <- plot_data %>%
-  mutate(Lifeyear_num = as.numeric(as.character(Lifeyear))) %>%
-  semi_join(
-    Growthdata %>%
-      mutate(Lifeyear_num = as.numeric(as.character(Lifeyear))) %>%
-      distinct(Genotype, Sample, Lifeyear_num),
-    by = c("Genotype", "Sample", "Lifeyear_num")
-  )
+# plot_data2 <- plot_data %>%
+#   mutate(Lifeyear_num = as.numeric(as.character(Lifeyear))) %>%
+#   semi_join(
+#     Growthdata %>%
+#       mutate(Lifeyear_num = as.numeric(as.character(Lifeyear))) %>%
+#       distinct(Genotype, Sample, Lifeyear_num),
+#     by = c("Genotype", "Sample", "Lifeyear_num")
+#   )
 
 #Age-specific effects
 plot_theme <- theme(panel.grid.major = element_line(linewidth = .3, colour = "lightgrey"),
@@ -2192,7 +2210,7 @@ Geno1 <- ggplot(Growthdata[Growthdata$Genotype == 1,], aes(as.factor(Lifeyear), 
   # stat_summary(fun.data = function(x) data.frame(ymin = quantile(x, 0.025), y = median(x), ymax = quantile(x, 0.975)),
   # geom = "pointrange",  position = position_dodge(width = 0.75)) +
   #geom_smooth(method = "lm")+
-  labs(title = "Genotype 1 (brackish)", x="Age (years)", y=expression("Growth index"), fill="Sample")+
+  labs(title = "Brackish 1 genotype", x="Age (years)", y=expression("Growth index"), fill="Sample")+
   scale_x_discrete(limits = c(1:10),
                   breaks=c(1:10))+
   scale_y_continuous(limits = c(100, 500)) +
@@ -2208,7 +2226,7 @@ Geno2 <- ggplot(Growthdata[Growthdata$Genotype == 2,], aes(as.factor(Lifeyear), 
   #stat_summary(fun.data = function(x) data.frame(ymin = quantile(x, 0.025), y = median(x), ymax = quantile(x, 0.975)),
   #geom = "pointrange",  position = position_dodge(width = 0.75)) +
   #geom_smooth(method = "lm")+
-  labs(title = "Genotype 2 (brackish)", x="Age (years)", y=expression("Growth index"), fill="Sample")+
+  labs(title = "Brackish 2 genotype", x="Age (years)", y=expression("Growth index"), fill="Sample")+
   scale_x_discrete(limits = c(1:10),
                   breaks=c(1:10))+
   scale_y_continuous(limits = c(100, 500)) +
@@ -2223,7 +2241,7 @@ Geno3 <- ggplot(Growthdata[Growthdata$Genotype == 3,], aes(as.factor(Lifeyear), 
   #stat_summary(fun.data = function(x) data.frame(ymin = quantile(x, 0.025), y = median(x), ymax = quantile(x, 0.975)),
   #geom = "pointrange",  position = position_dodge(width = 0.75)) +
   #geom_smooth(method = "lm")+
-  labs(title = "Genotype 3 (anadromous)", x="Age (years)", y=expression("Growth index"), fill="Sample")+
+  labs(title = "Anadromous genotype", x="Age (years)", y=expression("Growth index"), fill="Sample")+
   scale_x_discrete(limits = c(1:10),
                   breaks=c(1:10))+
   scale_y_continuous(limits = c(100, 500)) +
@@ -2238,7 +2256,7 @@ Geno4 <- ggplot(Growthdata[Growthdata$Genotype == 4,], aes(as.factor(Lifeyear), 
   #stat_summary(fun.data = function(x) data.frame(ymin = quantile(x, 0.025), y = median(x), ymax = quantile(x, 0.975)),
   #geom = "pointrange",  position = position_dodge(width = 0.75)) +
   #geom_smooth(method = "lm")+
-  labs(title = "Genotype 4 (freshwater)", x="Age (years)", y=expression("Growth index"), fill="Sample")+
+  labs(title = "Freshwater genotype", x="Age (years)", y=expression("Growth index"), fill="Sample")+
   scale_x_discrete(limits = c(1:10),
                   breaks=c(1:10))+
   scale_y_continuous(limits = c(100, 500)) +
@@ -2650,7 +2668,7 @@ Prey_FO_recent <- build_FO_table(SC_all, "fish_ID", "Species_raw", n_pike_recent
 Prey_FO_past   <- build_FO_table(Winkler_preysize_past, "Pike_ID", "Species_raw", n_pike_past)
 Prey_FO_15     <- build_FO_table(Winkler_preysize_15, "Pike_ID", "Species_raw", n_pike_15)
 
-# --- Shared colour lookup, built once from the union of species across all 3 periods ---
+# Shared colour lookup, built once from the union of species across all 3 periods
 all_common_species <- sort(unique(c(
   setdiff(Prey_FO_recent$Species, "Other"),
   setdiff(Prey_FO_past$Species, "Other"),
@@ -2659,6 +2677,7 @@ all_common_species <- sort(unique(c(
 
 palette_colors <- khroma::colour("discrete rainbow")(length(all_common_species))
 species_colors <- setNames(as.character(palette_colors), all_common_species)
+species_colors["C. harengus"] <- "#004643"
 species_colors["Other"] <- "grey60"
 
 saveRDS(species_colors, "Data/Prey/Species-cols.rds")
@@ -2667,7 +2686,7 @@ Prey_FO_recent <- Prey_FO_recent %>% dplyr::mutate(Species = factor(Species, lev
 Prey_FO_past   <- Prey_FO_past   %>% dplyr::mutate(Species = factor(Species, levels = names(species_colors)))
 Prey_FO_15     <- Prey_FO_15     %>% dplyr::mutate(Species = factor(Species, levels = names(species_colors)))
 
-# --- Order bars by descending contribution within each panel, "Other" always last ---
+# Order bars by descending contribution within each panel, "Other" always last
 order_by_contribution <- function(df) {
   df %>%
     dplyr::mutate(Species = as.character(Species)) %>%
@@ -2716,7 +2735,7 @@ FO_15 <- ggplot(Prey_FO_15, aes(Species, Proportion, fill = Species)) +
         axis.text.y = element_text(size = 8, colour = "black"),
         legend.position = "none")
 
-# --- Size / length histograms (unchanged) ---
+# Size / length histograms
 Sizes_past <- ggplot(Winkler_preysize_past) +
   geom_histogram(aes(Prey_TL_cm)) +
   scale_x_continuous(limits = c(0, 51)) +
@@ -2789,7 +2808,7 @@ Hist_recent <- ggplot(SC_all) +
         axis.title = element_text(size = 10, color = "black"),
         axis.text = element_text(size = 10, color = "black"))
 
-# --- Combine per period ---
+#Combine per period
 Past <- ggarrange(FO_past, Sizes_past, Hist_past, nrow = 1)
 Past1 <- annotate_figure(Past, top = text_grob("1987 - 1990 (N = 97)", size = 12, color = "black"))
 
@@ -2799,7 +2818,7 @@ Year15.1 <- annotate_figure(Year15, top = text_grob("Spring 2015 (N = 83)", size
 Recent <- ggarrange(FO_recent, Sizes_recent, Hist_recent, nrow = 1)
 Recent1 <- annotate_figure(Recent, top = text_grob("2019 - 2022 (N = 171)", size = 12, color = "black"))
 
-# --- Legend (species -> colour taken directly from the shared lookup) ---
+#Legend (species -> colour taken directly from the shared lookup)
 dummy_data1 <- data.frame(
   Species = factor(names(species_colors), levels = names(species_colors)),
   x = seq_along(species_colors),
@@ -3183,9 +3202,108 @@ fwrite(comorants_dist_final, "Data/Environment/Timeseries/Cormorant_data/comoran
 ```{r trawl data analysis, include=FALSE, eval=FALSE}
 rm(list = ls())
 
+# --- Monatliche Umweltdaten, Barther Bodden ("BAT") ---
+LUNGdata <- fread("Data/Environment/Lungdata-monthly-means.csv")
+
+LUNGdata_bat_yearly <- LUNGdata %>%
+  dplyr::filter(Area == "BAT") %>%
+  dplyr::group_by(Year) %>%
+  dplyr::reframe(Chla_mg_m3 = mean(Chla_mg_m3, na.rm = TRUE),
+                 Total_N = mean(Total_N, na.rm = TRUE),
+                 Total_P = mean(Total_P, na.rm = TRUE),
+                 Secchi_m = mean(Secchi_m, na.rm = TRUE)) %>%
+  dplyr::ungroup()
+
+# --- Trophie-Maß entscheiden (wie im Original-Snippet) ---
+cor(LUNGdata_bat_yearly[, c("Chla_mg_m3", "Total_N", "Total_P", "Secchi_m")], use = "pairwise.complete.obs")
+
+complete_idx <- complete.cases(LUNGdata_bat_yearly[, c("Chla_mg_m3", "Total_N", "Total_P", "Secchi_m")])
+
+fa_result <- factanal(
+  LUNGdata_bat_yearly[complete_idx, c("Chla_mg_m3", "Total_N", "Total_P", "Secchi_m")],
+  factors = 1,
+  rotation = "varimax",
+  scores = "regression")
+fa_result
+
+# --- ProductivityIndex: Mittelwert der z-Scores (Chla, N, P) ---
+LUNGdata_bat_yearly <- LUNGdata_bat_yearly %>%
+  dplyr::mutate(dplyr::across(c(Chla_mg_m3, Total_N, Total_P),
+                               ~ as.numeric(scale(.x)), .names = "z_{.col}")) %>%
+  dplyr::mutate(ProductivityIndex = rowMeans(dplyr::across(c(z_Chla_mg_m3, z_Total_N, z_Total_P)), na.rm = TRUE))
+
+# --- GDD (Temperatur-Proxy) ---
+GDDdata <- fread("Data/Environment/GDD_Bodden.csv")
+
+# --- Kormoran-Index (Darß-Zingster Bodden Ost, wie beim Trawlplot-Merge) ---
+comorants_dist_final <- fread("Data/Environment/Timeseries/Cormorant_data/comorants_dist_weighted.csv")
+
+cormorant_index <- comorants_dist_final %>%
+  dplyr::filter(Gebiet == "Darß-Zingster Bodden Ost") %>%
+  dplyr::mutate(Year = as.numeric(as.character(year))) %>%
+  dplyr::select(Year, cormorants_weighted) %>%
+  dplyr::filter(!is.na(cormorants_weighted))
+
+# --- Trawl-Biomasse (roh, kg/ha -- nicht skaliert, siehe frühere Klärung) ---
+Trawls <- fread("Data/Prey/Trawldata_1983-2013.CSV")
+
+# --- Zusammenführen ---
+Model_data <- Trawls %>%
+  dplyr::select(Year, Biomass_per_ha) %>%
+  dplyr::left_join(LUNGdata_bat_yearly %>% dplyr::select(Year, ProductivityIndex), by = "Year") %>%
+  dplyr::left_join(GDDdata, by = "Year") %>%
+  dplyr::left_join(cormorant_index, by = "Year") %>%
+  tidyr::drop_na()
+
+nrow(Model_data)  # tatsächliche N nach Merge prüfen -- kann < 31 sein, falls Jahre in einer Quelle fehlen
+
+lm_biomass <- lm(Biomass_per_ha ~ ProductivityIndex + GDD + cormorants_weighted, data = Model_data)
+summary(lm_biomass)
+car::vif(lm_biomass)  # Multikollinearität zwischen den 3 Prädiktoren prüfen
+
+# Nur falls die Residuen gegen einen Prädiktor klar nichtlinear aussehen:
+gam_biomass <- gam(Biomass_per_ha ~ s(ProductivityIndex, k = 4) + s(GDD, k = 4) + s(cormorants_weighted, k = 4),
+                    data = Model_data, method = "REML")
+summary(gam_biomass)
+gam.check(gam_biomass)
+
+plot(gam_biomass, select = 3, shade = TRUE, seWithMean = TRUE)
+
+cor(Model_data$Year, Model_data$cormorants_weighted, use = "pairwise.complete.obs")
+cor(Model_data$Year, Model_data$ProductivityIndex, use = "pairwise.complete.obs")
+
+gam_biomass_year <- gam(Biomass_per_ha ~ s(Year, k = 4) + s(ProductivityIndex, k = 4) +
+                           s(GDD, k = 4) + s(cormorants_weighted, k = 4),
+                         data = Model_data, method = "REML")
+summary(gam_biomass_year)
+
+gam_biomass_linear_corm <- gam(Biomass_per_ha ~ s(ProductivityIndex, k = 4) + s(GDD, k = 4) + cormorants_weighted,
+                                data = Model_data, method = "REML")
+AIC(gam_biomass, gam_biomass_linear_corm)
+
+cor(Model_data$ProductivityIndex, Model_data$Biomass_per_ha, use = "pairwise.complete.obs")
+MuMIn::AICc(gam_biomass, gam_biomass_year, gam_biomass_linear_corm)
+
+Cormorant_supp <- ggplot(cormorant_index, aes(x = Year, y = cormorants_weighted)) +
+  geom_line(linewidth = 0.6) +
+  geom_point(size = 1) +
+  theme_classic() +
+  labs(x = "Year", y = "Cormorant index (distance-weighted)") +
+  theme(axis.text = element_text(size = 10, colour = "black"),
+        axis.title = element_text(size = 10, colour = "black"))
+
+ggsave("Figures/Supplement_Cormorant_index.png", Cormorant_supp, width = 12, height = 8, units = "cm", dpi = 600, bg = "white")
+
+```
+
+
+```{r trawl data plot, include=FALSE, eval=FALSE}
+rm(list = ls())
+
 # Trawl data Barther Bodden, abundance/biomass per hectar, juvenile and small fish up to 10 cm TL, 5 mm mesh size
 Trawls <- fread("Data/Prey/Trawldata_1983-2013.CSV")
 cormorants_dist_final <- fread("Data/Environment/Timeseries/Cormorant_data/comorants_dist_weighted.csv")
+LUNGdata <- fread("Data/Environment/Lungdata-monthly-means.csv")
 
 cols_to_scale <- c(4:28)
 Trawls[, (cols_to_scale) := lapply(.SD, scale), .SDcols = cols_to_scale]
@@ -3251,32 +3369,70 @@ cormorant_range <- range(cormorant_index$cormorants_weighted, na.rm = TRUE)
 scale_factor <- diff(biomass_range) / diff(cormorant_range)
 scale_offset <- biomass_range[1] - cormorant_range[1] * scale_factor
 
-# --- Trawlplot1: Biomass (kg/ha) + Kormoran-Index (2. y-Achse) ---
+# Trophic index
+LUNGdata_bat_yearly <- LUNGdata %>%
+  dplyr::filter(Area == "BAT") %>%
+  dplyr::group_by(Year) %>%
+  dplyr::reframe(Chla_mg_m3 = mean(Chla_mg_m3, na.rm = TRUE),
+                 Total_N = mean(Total_N, na.rm = TRUE),
+                 Total_P = mean(Total_P, na.rm = TRUE),
+                 Secchi_m = mean(Secchi_m, na.rm = TRUE)) %>%
+  dplyr::ungroup()
+
+LUNGdata_bat_yearly <- LUNGdata_bat_yearly %>%
+  dplyr::mutate(dplyr::across(c(Chla_mg_m3, Total_N, Total_P),
+                               ~ as.numeric(scale(.x)), .names = "z_{.col}")) %>%
+  dplyr::mutate(ProductivityIndex = rowMeans(dplyr::across(c(z_Chla_mg_m3, z_Total_N, z_Total_P)), na.rm = TRUE))
+
+# --- z-Score von Kormoran-Index & Trophic Index (im Trawl-Jahresbereich) ---
+cormorant_index <- cormorant_index %>%
+  dplyr::mutate(z_cormorant = as.numeric(scale(cormorants_weighted)))
+
+trophic_index <- LUNGdata_bat_yearly %>%
+  dplyr::filter(Year >= trawl_year_range[1], Year <= trawl_year_range[2]) %>%
+  dplyr::select(Year, ProductivityIndex) %>%
+  dplyr::filter(!is.na(ProductivityIndex)) %>%
+  dplyr::mutate(z_trophic = as.numeric(scale(ProductivityIndex)))
+
+# --- gemeinsamer linearer Mapping-Faktor: z-Score-Bereich -> Biomass-Wertebereich ---
+z_range <- range(c(cormorant_index$z_cormorant, trophic_index$z_trophic), na.rm = TRUE)
+biomass_range <- range(Trawls_long1$z, na.rm = TRUE)
+
+z_scale_factor <- diff(biomass_range) / diff(z_range)
+z_scale_offset <- biomass_range[1] - z_range[1] * z_scale_factor
+
+z_lines <- dplyr::bind_rows(
+  cormorant_index %>% dplyr::transmute(Year, Variable = "Cormorant index",
+                                        z = z_cormorant * z_scale_factor + z_scale_offset),
+  trophic_index %>% dplyr::transmute(Year, Variable = "Trophic index",
+                                      z = z_trophic * z_scale_factor + z_scale_offset)
+)
+
+# --- Trawlplot1: Biomass (primär) + Cormorant/Trophic z-Score (sekundär) ---
 Trawlplot1 <- ggplot(Trawls_long1, aes(x = Year, y = z, colour = Variable)) +
   geom_point(alpha = 0.6, size = 1) +
-  geom_smooth(method = "loess", se = TRUE, linewidth = 0.8) +
+  geom_smooth(method = "loess", se = TRUE, linewidth = 1.2) +
   geom_vline(xintercept = 1989, linetype = "dashed", colour = "red", linewidth = 0.8) +
-  geom_line(data = cormorant_index,
-            aes(x = Year, y = cormorants_weighted * scale_factor + scale_offset),
-            inherit.aes = FALSE, colour = "black", linewidth = 0.8) +
+  geom_line(data = z_lines, linewidth = 1) +
   coord_cartesian(ylim = c(0, NA)) +
   scale_y_continuous(
-    sec.axis = sec_axis(~ (. - scale_offset) / scale_factor,
-                         name = "Cormorant index (distance-weighted)")
+    sec.axis = sec_axis(~ (. - z_scale_offset) / z_scale_factor,
+                         name = "Trophic/cormorant index (z-score)")
   ) +
-  scale_colour_manual(values = c("Biomass_per_ha" = "darkred")) +
+  scale_colour_manual(values = c("Biomass_per_ha" = "darkred",
+                                  "Cormorant index" = "black",
+                                  "Trophic index" = "#A6761D"),
+                       labels = c("Biomass_per_ha" = "Prey biomass",
+                                  "Cormorant index" = "Cormorant index",
+                                  "Trophic index" = "Trophic index")) +
   theme_classic() +
-  labs(x = "Year", y = "Total biomass (kg/ha)") +
-  theme(legend.position = "none",
+  labs(x = "Year", y = "Total biomass (kg/ha)", colour = NULL) +
+  theme(legend.position = "bottom",
         panel.grid.major.y = element_line(colour = "lightgrey", linewidth = 0.5),
         plot.title = element_text(size = 10, colour = "black"),
-        axis.text.y.left = element_text(size = 10, colour = "darkred"),
-        axis.title.y.left = element_text(size = 10, colour = "darkred"),
-        axis.line.y.left = element_line(colour = "darkred"),
-        axis.ticks.y.left = element_line(colour = "darkred"),
-        axis.text.y.right = element_text(size = 10, colour = "black"),
-        axis.title.y.right = element_text(size = 10, colour = "black"),
-        axis.line.y.right = element_line(colour = "black"))
+        axis.text = element_text(size = 10, colour = "black"),
+        axis.title = element_text(size = 10, colour = "black"),
+        legend.text = element_text(size = 9))
 
 species_colors <- readRDS("Data/Prey/Species-cols.rds")
 
@@ -3477,182 +3633,159 @@ fwrite(Prey_all, "Data/Prey/Prey-data-all.csv")
 ```
 
 ```{r scale isotopes plot, include=FALSE, eval=FALSE}
+# Pike vs. prey stable isotope biplots (d13C-d15N, d13C-d34S, d15N-d34S)
+# Historic vs. recent pike isotopic niche, with prey species as reference
+
+library(data.table)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(ggpubr)
+library(lubridate)
+
 rm(list = ls())
 
-Pike <- fread("Data/Pike/Pikemaster.csv")
-Prey <- fread("Data/Prey/Prey-data-all.csv")
+areas_excluded <- c("Sehrowbach", "Barthe", "Peene", "KWB", "Duwenbeek", "Beek",
+                     "Badendycksgraben", "Barthe/Peene")
 
-Pike_recent <- Pike %>%
-  filter(Sample == "Recent" &
-           !Area %in% c("Sehrowbach", "Barthe", "Peene", "KWB", "Duwenbeek", "Beek", "Badendycksgraben", "Barthe/Peene"))%>%
-  transmute(Fish_ID,
-            Length = TL_mm,
-            Sample,
-            Capt_date, Weight, 
-            Sample_type = "Muscle",
-            Area,
-            d15N = d15N_muscle,
-            d13C = d13C_muscle,
-            d34S = d34S_muscle) %>%
-  drop_na(d34S)%>%
-  distinct()
+#Pike: recent (muscle) + historic (scale)
+Pike_raw <- fread("Data/Pike/Pikemaster.csv")
 
-#Historic pike scale SI data, correct d13C - 3.2 and d15N -0.5
+build_pike <- function(sample_type, d15N_col, d13C_col, d34S_col) {
+  Pike_raw %>%
+    dplyr::filter(Sample == sample_type, !Area %in% areas_excluded) %>%
+    dplyr::transmute(
+      Fish_ID, Length = TL_mm, Sample, Capt_date, Weight,
+      Sample_type = "Muscle", Area,
+      d15N = .data[[d15N_col]],  
+      d13C = .data[[d13C_col]],  
+      d34S = .data[[d34S_col]]
+    ) %>%
+    tidyr::drop_na(d34S) %>%
+    dplyr::distinct()
+}
 
-Pike_historic <- Pike %>%
-  filter(Sample == "Historic" &
-           !Area %in% c("Sehrowbach", "Barthe", "Peene", "KWB", "Duwenbeek", "Beek", "Badendycksgraben", "Barthe/Peene"))%>%
-  transmute(Fish_ID,
-            Length = TL_mm,
-            Sample,
-            Capt_date, Weight, 
-            Sample_type = "Muscle",
-            Area,
-            d15N = d15N_scale,
-            d13C = d13C_scale,
-            d34S = d34S_scale) %>%
-  drop_na(d34S) %>%
-  distinct()
+Pike <- dplyr::bind_rows(
+  build_pike("Recent",   "d15N_muscle", "d13C_muscle", "d34S_muscle"),
+  build_pike("Historic", "d15N_scale",  "d13C_scale",  "d34S_scale")
+)
 
-Prey2 <- Prey %>%
-  transmute(Fish_ID = ID, 
-            Species, 
-            Capt_date = as.Date(lubridate::parse_date_time(gsub("\ .", "-", capt_date), orders = "dmy")), 
-            Length = SL_mm,
-            Weight = weight_g,
-            Sample_type = sample_type,
-            Area = area,
-            d15N, d13C, d34S) %>%
-  filter(Species %in% c("C.harengus", "C. harengus_historic", "R.rutilus", "R. rutilus_historic",
-                                  "P.fluviatilis", "P.fluviatilis_historic", "N.melanostomus", "P.flesus",
-                                  "Z.viviparus", "S.lucioperca", "G.cernua"))
+# species colors/labels name which species are kept, how they're ordered, and how they're drawn
+species_colors <- c(
+  "C.harengus"             = "#1B9E77",
+  "C. harengus_historic"   = "#004643",
+  "R.rutilus"              = "#66A61E",
+  "R. rutilus_historic"    = "darkgreen",
+  "P.fluviatilis"          = "#D95F02",
+  "P.fluviatilis_historic" = "darkred",
+  "N.melanostomus"         = "cyan",
+  "G.aculeatus"            = "black",
+  "Z.viviparus"            = "#7570B3",
+  "P.flesus"               = "#E7298A",
+  "G.cernua"               = "#E6AB02",
+  "S.lucioperca"           = "#A6761D"
+)
+species_labels <- c(
+  "C.harengus"             = "C. harengus",
+  "C. harengus_historic"   = "Historic C. harengus",
+  "R.rutilus"              = "R. rutilus",
+  "R. rutilus_historic"    = "Historic R. rutilus",
+  "P.fluviatilis"          = "P. fluviatilis",
+  "P.fluviatilis_historic" = "Historic P. fluviatilis",
+  "N.melanostomus"         = "N. melanostomus",
+  "G.aculeatus"            = "G. aculeatus",
+  "Z.viviparus"            = "Z. viviparus",
+  "P.flesus"               = "P. flesus",
+  "G.cernua"               = "G. cernua",
+  "S.lucioperca"           = "S. lucioperca"
+)
+sample_colors <- c(Historic = "#00BFB2", Recent = "#C5D86D")
+sample_labels <- c(Historic = "Historic pike", Recent = "Recent pike")
 
-Pike <- rbind(Pike_recent, Pike_historic)
+Prey_raw <- fread("Data/Prey/Prey-data-all.csv")
 
+Prey <- Prey_raw %>%
+  dplyr::transmute(
+    Fish_ID = ID,
+    Species,
+    Capt_date = as.Date(lubridate::parse_date_time(gsub("\\.", "-", capt_date), orders = "dmy")),
+    Length = SL_mm, Weight = weight_g,
+    Sample_type = sample_type, Area = area,
+    d15N, d13C, d34S
+  ) %>%
+  dplyr::filter(Species %in% names(species_colors))
 
-length_by_sp<-aggregate(cbind(d15N, d13C, d34S)~Species, data=Prey2, FUN=length)
-length_by_sp
+# Prey descriptive stats (mean +/- SD per species)
 
-m_by_sp<-aggregate(cbind(d15N, d13C, d34S)~Species, data=Prey2, FUN=mean)
+descriptiveprey <- Prey %>%
+  dplyr::group_by(Species) %>%
+  dplyr::summarise(
+    n = dplyr::n(),
+    sdd15N = sd(d15N, na.rm = TRUE), sdd13C = sd(d13C, na.rm = TRUE), sdd34S = sd(d34S, na.rm = TRUE),
+    d15N = mean(d15N, na.rm = TRUE), d13C = mean(d13C, na.rm = TRUE), d34S = mean(d34S, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  dplyr::rename(Sp = Species) %>%
+  tidyr::drop_na() %>%
+  dplyr::mutate(Sp = factor(Sp, levels = names(species_colors)))
 
-sd_by_sp<-aggregate(cbind(d15N, d13C, d34S)~Species, data=Prey2, FUN=sd)
+# Biplot builder
+make_biplot <- function(xvar, yvar, xlab, ylab,
+                         legend_position = "none", legend_key_size = 0.5) {
+  sd_x <- paste0("sd", xvar)
+  sd_y <- paste0("sd", yvar)
 
-descriptive<-cbind(m_by_sp, sd_by_sp)
-descriptive<-descriptive[-5]
-colnames(descriptive)<-c("Sp", "d15N", "d13C", "d34S", "sdd15N", "sdd13C", "sdd34S")
-descriptive
+  ggplot() +
+    stat_density_2d(
+      data = Pike, aes(x = .data[[xvar]], y = .data[[yvar]], fill = Sample),
+      alpha = 0.5, geom = "polygon", linewidth = 0.1
+    ) +
+    geom_errorbar(
+      data = descriptiveprey,
+      aes(x = .data[[xvar]], y = .data[[yvar]],
+          ymin = .data[[yvar]] - .data[[sd_y]], ymax = .data[[yvar]] + .data[[sd_y]],
+          col = Sp),
+      width = 0.5, linewidth = 0.5, show.legend = FALSE
+    ) +
+    geom_errorbarh(
+      data = descriptiveprey,
+      aes(x = .data[[xvar]], y = .data[[yvar]],
+          xmin = .data[[xvar]] - .data[[sd_x]], xmax = .data[[xvar]] + .data[[sd_x]],
+          col = Sp),
+      height = 0.5, linewidth = 0.5, show.legend = FALSE
+    ) +
+    geom_line(
+      data = descriptiveprey,
+      aes(x = .data[[xvar]], y = .data[[yvar]], col = Sp),
+      linewidth = 0.8, alpha = 0
+    ) +
+    labs(fill = "Pike", col = "Prey", x = xlab, y = ylab) +
+    theme_bw() +
+    scale_colour_manual(values = species_colors, labels = species_labels) +
+    scale_fill_manual(values = sample_colors, breaks = names(sample_colors), labels = sample_labels) +
+    theme(
+      text = element_text(size = 10, color = "black"),
+      legend.title = element_text(size = 8, color = "black"),
+      legend.position = legend_position,
+      legend.text = element_text(color = "black", size = 8, face = "italic"),
+      legend.key.size = unit(legend_key_size, "cm"),
+      strip.background = element_rect(colour = "black", fill = "white"),
+      legend.key = element_blank()
+    ) +
+    guides(
+      colour = guide_legend(override.aes = list(fill = NA, linewidth = 0.8)),
+      fill = guide_legend(nrow = 2, byrow = TRUE)
+    )
+}
 
-descriptiveprey <- descriptive%>%
-  drop_na()
+CN <- make_biplot("d13C", "d15N", expression(delta^13*C~"(‰)"), expression(delta^15*N~"(‰)"),
+                   legend_position = "bottom", legend_key_size = 0.2)
+CS <- make_biplot("d13C", "d34S", expression(delta^13*C~"(‰)"), expression(delta^34*S~"(‰)"))
+NS <- make_biplot("d15N", "d34S", expression(delta^15*N~"(‰)"), expression(delta^34*S~"(‰)"))
 
-descriptiveprey$Sp <- as.factor(descriptiveprey$Sp)
+Ecopike <- ggarrange(CN, CS, NS, ncol = 3, nrow = 1, common.legend = TRUE, legend = "bottom")
 
-Pike$Species <- as.factor(Pike$Species)
-
-###Get rid of all the useless species!!! Only the ones with relevant stomach percentage! rm(list = ls())
-
-descriptiveprey$Sp <- fct_relevel(descriptiveprey$Sp, "C.harengus", "C. harengus_historic", "R.rutilus", "R. rutilus_historic",
-                                  "P.fluviatilis", "P.fluviatilis_historic", "N.melanostomus", "P.flesus",
-                                  "Z.viviparus", "S.lucioperca", "G.cernua")
-
-#Biplot by species
-colorBlindBlack8  <- c("#00BFB2", "cyan", "#D95F02", "darkorange", "brown4", "red", "#A6761D", "#004643",
-                       "#7570B3", "#E6AB02", "darkred", "darkgrey" ,"#1B9E77","darkgreen")
-
-
-CN <- ggplot()+  
-  stat_density_2d(data = Pike, aes(x = d13C, y = d15N, fill = Sample), 
-                  alpha = 0.5, geom = "polygon", linewidth = .1)+ 
-  geom_errorbar(data=descriptiveprey, aes(x=d13C, y=d15N, ymin = d15N-sdd15N,ymax = d15N+sdd15N, col=Sp),
-                        width=.5, size=.5, show.legend = FALSE) +
-  geom_errorbarh(data=descriptiveprey, aes(x=d13C, y=d15N, xmin = d13C+sdd13C,xmax = d13C-sdd13C, col=Sp),
-                 height=.5, size=.5, show.legend = FALSE)+
-  geom_line(data = descriptiveprey, aes(d13C, d15N, col = Sp), linewidth = 0.8, alpha = 0)+
-  labs(fill = "Pike sample", col = "Prey species")+
-  theme_bw()+xlab(delta^"13"~"C(\u2030)")+ylab(delta^"15"~"N(\u2030)")+
-  scale_colour_manual(values=c("C.harengus" = "#1B9E77", "C. harengus_historic" = "#004643", "R.rutilus" = "#66A61E", 
-                              "R. rutilus_historic" = "darkgreen", "P.fluviatilis" = "#D95F02", "P.fluviatilis_historic" = "darkred",
-                              "Z.viviparus" = "#7570B3", "P.flesus" = "#E7298A", "G.cernua" = "#E6AB02", "N.melanostomus" = "cyan", 
-                              "S.lucioperca" = "#A6761D"),
-                      labels = c("C.harengus" = "C. harengus", "C. harengus_historic" = "Historic C. harengus", "R.rutilus" = "R. rutilus", 
-                              "R. rutilus_historic" = "Historic R. rutilus", "P.fluviatilis" = "P. fluviatilis", 
-                              "P.fluviatilis_historic" = "Historic P. fluviatilis", "Z.viviparus" = "Z. viviparus", 
-                              "P.flesus" = "P. flesus", "G.cernua" = "G. cernua", "N.melanostomus" = "N. melanostomus", 
-                              "S.lucioperca" = "S. luciuperca"))+
-  scale_fill_manual(breaks = c("Historic", "Recent"), 
-                    values = c("#00BFB2","#C5D86D"),
-                    labels = c("Historic pike", "Recent pike"))+
-  theme(text = element_text(size = 10, color = "black"),
-        legend.position="bottom",
-        legend.text = element_text(color = "black", size=5, face="italic"),
-        legend.key.size = unit(.2, 'cm'),
-        strip.background = element_rect(colour="black", fill="white"),
-        legend.key = element_blank())+
-  guides(colour = guide_legend(override.aes = list(fill = NA, linewidth = 0.8)))
-
-CS <- ggplot()+  
-  stat_density_2d(data = Pike, aes(x = d13C, y = d34S, fill = Sample), 
-                  alpha = 0.5, geom = "polygon", linewidth = .1)+ 
-  geom_errorbar(data=descriptiveprey, aes(x=d13C, y=d34S, ymin = d34S-sdd34S,ymax = d34S+sdd34S, col=Sp),
-                        width=.5, size=.5, show.legend = FALSE) +
-  geom_errorbarh(data=descriptiveprey, aes(x=d13C, y=d34S, xmin = d13C+sdd13C,xmax = d13C-sdd13C, col=Sp),
-                 height=.5, size=.5, show.legend = FALSE)+
-  geom_line(data = descriptiveprey, aes(d13C, d34S, col = Sp), linewidth = 0.8, alpha = 0)+
-  labs(fill = "Pike sample", col = "Prey species")+
-  theme_bw()+xlab(delta^"13"~"C(\u2030)")+ylab(delta^"34"~"S(\u2030)")+
-  scale_colour_manual(values=c("C.harengus" = "#1B9E77", "C. harengus_historic" = "#004643", "R.rutilus" = "#66A61E", 
-                              "R. rutilus_historic" = "darkgreen", "P.fluviatilis" = "#D95F02", "P.fluviatilis_historic" = "darkred",
-                              "Z.viviparus" = "#7570B3", "P.flesus" = "#E7298A", "G.cernua" = "#E6AB02", "N.melanostomus" = "cyan", 
-                              "S.lucioperca" = "#A6761D"),
-                      labels = c("C.harengus" = "C. harengus", "C. harengus_historic" = "Historic C. harengus", "R.rutilus" = "R. rutilus", 
-                              "R. rutilus_historic" = "Historic R. rutilus", "P.fluviatilis" = "P. fluviatilis", 
-                              "P.fluviatilis_historic" = "Historic P. fluviatilis", "Z.viviparus" = "Z. viviparus", 
-                              "P.flesus" = "P. flesus", "G.cernua" = "G. cernua", "N.melanostomus" = "N. melanostomus", 
-                              "S.lucioperca" = "S. luciuperca"))+
-  scale_fill_manual(breaks = c("Historic", "Recent"), 
-                    values = c("#00BFB2","#C5D86D"),
-                    labels = c("Historic pike", "Recent pike"))+
-  theme(text = element_text(size = 10, color = "black"),
-        legend.position="none",
-        legend.text = element_text(color = "black", size=5, face="italic"),
-        legend.key.size = unit(.5, 'cm'),
-        strip.background = element_rect(colour="black", fill="white"),
-        legend.key = element_blank())+
-  guides(colour = guide_legend(override.aes = list(fill = NA, linewidth = 0.8)))
-
-NS <- ggplot()+  
-  stat_density_2d(data = Pike, aes(x = d15N, y = d34S, fill = Sample), 
-                  alpha = 0.5, geom = "polygon", linewidth = .1)+ 
-  geom_errorbar(data=descriptiveprey, aes(x=d15N, y=d34S, ymin = d34S-sdd34S,ymax = d34S+sdd34S, col=Sp),
-                        width=.5, size=.5, show.legend = FALSE) +
-  geom_errorbarh(data=descriptiveprey, aes(x=d15N, y=d34S, xmin = d15N+sdd15N,xmax = d15N-sdd15N, col=Sp),
-                 height=.5, size=.5, show.legend = FALSE)+
-  geom_line(data = descriptiveprey, aes(d15N, d34S, col = Sp), linewidth = 0.8, alpha = 0)+
-  labs(fill = "Pike sample", col = "Prey species")+
-  theme_bw()+xlab(delta^"15"~"N(\u2030)")+ylab(delta^"34"~"S(\u2030)")+
-  scale_colour_manual(values=c("C.harengus" = "#1B9E77", "C. harengus_historic" = "#004643", "R.rutilus" = "#66A61E", 
-                              "R. rutilus_historic" = "darkgreen", "P.fluviatilis" = "#D95F02", "P.fluviatilis_historic" = "darkred",
-                              "Z.viviparus" = "#7570B3", "P.flesus" = "#E7298A", "G.cernua" = "#E6AB02", "N.melanostomus" = "cyan", 
-                              "S.lucioperca" = "#A6761D"),
-                      labels = c("C.harengus" = "C. harengus", "C. harengus_historic" = "Historic C. harengus", "R.rutilus" = "R. rutilus", 
-                              "R. rutilus_historic" = "Historic R. rutilus", "P.fluviatilis" = "P. fluviatilis", 
-                              "P.fluviatilis_historic" = "Historic P. fluviatilis", "Z.viviparus" = "Z. viviparus", 
-                              "P.flesus" = "P. flesus", "G.cernua" = "G. cernua", "N.melanostomus" = "N. melanostomus", 
-                              "S.lucioperca" = "S. luciuperca"))+
-  scale_fill_manual(breaks = c("Historic", "Recent"), 
-                    values = c("#00BFB2","#C5D86D"),
-                    labels = c("Historic pike", "Recent pike"))+
-  theme(text = element_text(size = 10, color = "black"),
-        legend.position="none",
-        legend.text = element_text(color = "black", size=5, face="italic"),
-        legend.key.size = unit(.5, 'cm'),
-        strip.background = element_rect(colour="black", fill="white"),
-        legend.key = element_blank())+
-  guides(colour = guide_legend(override.aes = list(fill = NA, linewidth = 0.8)))
-
-
-Ecopike <- ggarrange(CN, CS, NS, ncol = 3, nrow = 1, common.legend = T)
-
+dir.create("Figures", showWarnings = FALSE)
 ggsave("Figures/Biplot-historic-vs-Recent.png", Ecopike, width = 16, height = 6, units = "cm", dpi = 600, bg = "white")
 saveRDS(Ecopike, "Data/Pike/Biplot-figure.rds")
 ```
@@ -3785,6 +3918,7 @@ loo_compare(loo_noGenN, loo_noSampN)
 d34S_final <- update(fit_noSampS, formula. = d34S ~ s(TL_cm, by = Sample, k = 10) + (1|Area), newdata = Pikedata)
 d13C_final <- update(fit_gam_C, formula. = d13C ~ s(TL_cm, k = 10) + Sample + (1|Area), newdata = Pikedata)
 d15N_final <- update(fit_linN_int, formula. = d15N ~ TL_cm * Sample + (1|Area), newdata = Pikedata)
+
 ```
 
 ```{r isotope figures, include=FALSE, eval=FALSE}
@@ -3855,7 +3989,7 @@ Isos1 <- annotate_figure(Isos, top = text_grob("Body-size specific pike isotope 
 Biplot <- readRDS("Data/Pike/Biplot-figure.rds")
 Biplot1 <- annotate_figure(Biplot, top = text_grob("Isotope biplots for pike and prey fish", size = 15, just = 0.5))
 
-Isoall <- ggarrange(Biplot1, Isos1, ncol = 1)
+Isoall <- ggarrange(Biplot1, Isos1, ncol = 1, labels = c("A", "B"))
 ggsave("Figures/Isotopes_historic-vs-Recent.png", Isoall, width = 16, height = 16, units = "cm", dpi = 600, bg = "white")
 ```
 
@@ -3932,7 +4066,6 @@ Isos1 <- annotate_figure(Isos, top = text_grob("Body-size specific pike isotope 
 
 ggsave("Figures/Isotopes_historic-vs-Recent-genotypes.png", Isos1, width = 16, height = 12, units = "cm", dpi = 600, bg = "white")
 ```
-
 
 # Population model
 
