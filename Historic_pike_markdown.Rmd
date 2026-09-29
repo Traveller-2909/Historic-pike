@@ -34,6 +34,7 @@ library(brms)
 library(rstan)
 options(mc.cores = parallel::detectCores())
 rstan_options(auto_write = TRUE)
+options(brms.backend = "cmdstanr", mc.cores = 4)
 ```
 
 # Data cleaning
@@ -137,7 +138,7 @@ Genotypes$clust <- apply(Genotypes[,c(2,3,4,5)], 1, FUN = which.max)
 Genotypes$clustval <- apply(Genotypes[,c(2,3,4,5)], 1, FUN = max)
 
 Genotypes2 <- Genotypes%>%
-  mutate(Genotype = case_when(clustval < 0.5 ~ "0",
+  mutate(Genotype = case_when(clustval < 0.7 ~ "0",
                             TRUE~as.character(clust)))
 
 
@@ -516,7 +517,7 @@ Genotypes$clust <- apply(Genotypes[,c(2,3,4,5)], 1, FUN = which.max)
 Genotypes$clustval <- apply(Genotypes[,c(2,3,4,5)], 1, FUN = max)
 
 Genotypes2 <- Genotypes%>%
-  mutate(Genotype = case_when(clustval < 0.5 ~ "0",
+  mutate(Genotype = case_when(clustval < 0.7 ~ "0",
                             TRUE~as.character(clust)))
 
 Genotypes2$Genotype <- fct_relevel(Genotypes2$Genotype, "4", "3", "1", "2", "0")
@@ -875,7 +876,7 @@ stancode <- "Data/Pike/Stan/Simple_VBGF_TZero_historic-vs-recent-vs-freshwater.s
 mod = stan_model(stancode, model_name = "pike growth population")
 
 #fitting
-fit_1 = sampling(mod, iter = 40000, data = standata_Pike1, thin = 100,
+fit_1 = sampling(mod, iter = 500, data = standata_Pike1, thin = 100,
                    control = list(adapt_delta = 0.95, max_treedepth = 14))
 
 print(fit_1, pars = c("LInf_area[1]", "LInf_area[2]", "LInf_area[3]", "LInf_area[4]", "LInf_area[5]"))
@@ -1699,7 +1700,7 @@ length(unique(Growthdata2[Growthdata2$Sample == "Historic",]$Fish_ID))
 Growthdata3 <- Growthdata2 %>%
   transmute(Fish_ID,
             Sample = as.factor(Sample),
-            Lifeyear,
+            Lifeyear = as.factor(Lifeyear),
             Cohort = as.factor(Cohort),
             Year,
             Sex = as.factor(Sex),
@@ -1711,7 +1712,6 @@ Growthdata3 <- Growthdata2 %>%
 
 fwrite(Growthdata3, "Data/Pike/Pikedata_agespecmodel.csv")
 ```
-
 
 ```{r plot environmental variables for appendix, include=FALSE, eval=FALSE}
 rm(list = ls())
@@ -1925,7 +1925,7 @@ saveRDS(loo_int0, "Data/GLMM_output/Loo-nointeraction.rds")
 fit_HistYearGenointeract <- brm(GIndex ~ Lifeyear + Sex + Lifeyear * Sample * Genotype + Area + (1|Fish_ID) + (1|Year) + (1|Cohort),
                         data = Growthdata, family = Gamma(link = "log"),
                         control = list(max_treedepth = 15, adapt_delta = 0.95),
-                        iter = 40000, warmup = 20000, chains = 4)
+                        iter = 500, warmup = 250, chains = 4)
 
 saveRDS(fit_HistYearGenointeract, "Data/GLMM_output/Model_fixed-hist_year-geno-interaction.rds")
 
@@ -2961,86 +2961,7 @@ Biomass_15 <- ggplot(Prey_biomass_15.2, aes(x = "", y = Proportion, fill = as.fa
   scale_fill_manual(breaks = c(1, 2, 3, 4, 5, 6), 
                     values = c("#1B9E77", "#66A61E", "blue"))
 
-Sizes_past <- ggplot(Winkler_preysize_past) +
-  geom_histogram(aes(Prey_TL_cm)) +
-  scale_x_continuous(limits = c(0, 51)) +
-  labs(title = "Prey size distribution",
-       x = "Standard length (cm)") +
-  geom_vline(xintercept = mean(Winkler_preysize_past$Prey_TL_cm), 
-             colour = "red", linetype = "dotted", linewidth = 1) +
-  theme_classic() +
-  theme(plot.title = element_text(size = 10, color = "black"),,
-        axis.title = element_text(size = 10, color = "black"),
-        axis.text = element_text(size = 10, color = "black"))
-
-Sizes_15 <- ggplot(Winkler_preysize_15) +
-  geom_histogram(aes(Prey_TL_cm)) +
-  scale_x_continuous(limits = c(0, 51)) +
-  labs(title = "Prey size distribution",
-       x = "Standard length (cm)") +
-  geom_vline(xintercept = mean(Winkler_preysize_15$Prey_TL_cm), colour = "red", 
-             linetype = "dotted", linewidth = 1) +
-  theme_classic() +
-  theme(plot.title = element_text(size = 10, color = "transparent"),,
-        axis.title = element_text(size = 10, color = "black"),
-        axis.text = element_text(size = 10, color = "black"))
-
-Sizes_recent <- ggplot(SC_all) +
-  geom_histogram(aes(prey_length_mm/10)) +
-  scale_x_continuous(limits = c(0, 51)) +
-  labs(title = "Prey size distribution",
-       x = "Standard length (cm)") +
-  geom_vline(xintercept = mean(SC_all$prey_length_mm/10), colour = "red", 
-             linetype = "dotted", linewidth = 1) +
-  theme_classic() +
-  theme(plot.title = element_text(size = 10, color = "transparent"),,
-        axis.title = element_text(size = 10, color = "black"),
-        axis.text = element_text(size = 10, color = "black"))
-
-Hist_past <- ggplot(Winkler_preysize_past) +
-  geom_histogram(aes(Pike_TL_cm)) +
-  scale_x_continuous(limits = c(0, 125)) +
-  labs(title = "Pike size distribution",
-       x = "Total length (cm)") +
-  geom_vline(xintercept = mean(Winkler_preysize_past$Pike_TL_cm), colour = "red", 
-             linetype = "dotted", linewidth = 1) +
-  theme_classic() +
-  theme(plot.title = element_text(size = 10, color = "black"),,
-        axis.title = element_text(size = 10, color = "black"),
-        axis.text = element_text(size = 10, color = "black"))
-
-Hist_15 <- ggplot(Winkler_preysize_15) +
-  geom_histogram(aes(Pike_TL_cm)) +
-    scale_x_continuous(limits = c(0, 125)) +
-  labs(title = "Pike size distribution",
-       x = "Total length (cm)") +
-  geom_vline(xintercept = mean(Winkler_preysize_15$Pike_TL_cm), colour = "red", 
-             linetype = "dotted", linewidth = 1) +
-  theme_classic() +
-  theme(plot.title = element_text(size = 10, color = "transparent"),
-        axis.title = element_text(size = 10, color = "black"),
-        axis.text = element_text(size = 10, color = "black"))
-
-Hist_recent <- ggplot(SC_all) +
-  geom_histogram(aes(pike_TL_mm/10)) +
-    scale_x_continuous(limits = c(0, 125)) +
-  labs(title = "Pike size distribution",
-       x = "Total length (cm)") +
-  geom_vline(xintercept = mean(SC_all$pike_TL_mm/10, na.rm = TRUE), colour = "red", 
-             linetype = "dotted", linewidth = 1) +
-  theme_classic() +
-  theme(plot.title = element_text(size = 10, color = "transparent"),,
-        axis.title = element_text(size = 10, color = "black"),
-        axis.text = element_text(size = 10, color = "black"))
-
-Past <- ggarrange(Biomass_past, Sizes_past, Hist_past, nrow = 1)
-Past1 <- annotate_figure(Past, top = text_grob("1987 - 1990 (N = 97)", size = 12, color = "black"))
-
-Year15 <- ggarrange(Biomass_15, Sizes_15, Hist_15, nrow = 1)
-Year15.1 <- annotate_figure(Year15, top = text_grob("Spring 2015 (N = 83)", size = 12, color = "black"))
-
-Recent <- ggarrange(Biomass_recent, Sizes_recent, Hist_recent, nrow = 1)
-Recent1 <- annotate_figure(Recent, top = text_grob("2019 - 2022 (N = 171)", size = 12, color = "black"))
+Biomasses <- ggarrange(Biomass_past, Biomass_15, Biomass_recent, nrow = 1, labels = c("A", "B", "C"))
 
 
 #Dummy data for plotting
@@ -3064,11 +2985,10 @@ legend_plot1 <- ggplot(dummy_data1, aes(x = x, y = y, color = species)) +
 legend1 <- cowplot::get_legend(legend_plot1)
 
 
-SCA_figure <- cowplot::plot_grid(Past1, Year15.1, Recent1, legend1,
-                  labels = c("A", "B", "C"),
-                  nrow = 4, ncol = 1)
+SCA_figure <- cowplot::plot_grid(Biomasses, legend1,
+                  nrow = 2, ncol = 1)
 
-ggsave("Figures/Stomach-contents-all.png", SCA_figure, width = 20, height = 20, units = "cm", dpi = 600, bg = "white")
+ggsave("Figures/Stomach-contents_biomass.png", SCA_figure, width = 20, height = 20, units = "cm", dpi = 600, bg = "white")
 ```
 
 ```{r figures predator-prey size relationship, include=FALSE, eval=FALSE}
