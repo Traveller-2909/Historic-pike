@@ -79,7 +79,7 @@ fwrite(Pike2, "Data/Pike/Historic_pike_master.csv")
 ```
 
 ```{r join to recent database, include=FALSE, eval=FALSE}
-Pike1 <- readRDS("D:/Nextcloud IGB/Boddenhecht/Data/Pike Data/1.pike_data_base_FOR_USERS/1Pike_Latest_Version.rds")
+Pike1 <- readRDS("C:/Users/trittweg/Nextcloud/Boddenhecht/Data/Pike Data/1.pike_data_base_FOR_USERS/1Pike_Latest_Version.rds")
 PikeH <- fread("Data/Pike/Historic_pike_master.csv")
 PikeH$Row_ID <- ((max(Pike1$Row_ID)+1):(max(Pike1$Row_ID)+nrow(PikeH)))
 
@@ -247,7 +247,7 @@ ggplot(Pikeages2[Pikeages2$quality == 3,], aes(as.factor(age), TL_mm))+
 
 Pikeages3 <- Pikeages2%>%
   group_by(fish_ID)%>%
-  dplyr::summarise(fish_ID=fish_ID,
+  dplyr::reframe(fish_ID=fish_ID,
             age=median(age, na.rm = T))%>%
   distinct()
 
@@ -631,7 +631,8 @@ Histo_iso_add <- Histopike %>%
 Pikemaster5 <- plyr::rbind.fill(Pikemaster4, Histo_iso_add)
 
 Pikemaster6 <- Pikemaster5 %>%
-  dplyr::mutate(Area = case_when(Area %in% c("NRB", "BAT", "S", "GB", "SB", "U", "KB", "WB", "BEG", "BEZ", "GJB", "VB", "DZB") ~ "Mesohaline",
+  dplyr::mutate(Capture_loc = Area,
+                Area = case_when(Area %in% c("NRB", "BAT", "S", "GB", "SB", "U", "KB", "WB", "BEG", "BEZ", "GJB", "VB", "DZB") ~ "Mesohaline",
                                  Area %in% c("P", "KJB", "SAB") ~ "Oligohaline",
                                  Area %in% c("Sehrowbach", "Barthe", "Peene", "KWB", "Duwenbeek", 
                                              "Beek", "NHG", "Badendycksgraben", "Ziese", "Barthe/Peene") ~ "Freshwater",
@@ -1656,7 +1657,7 @@ Growthdata <- Pikemaster4 %>%
                             TRUE ~ GIndex)) %>%
   transmute(Fish_ID, Sample, 
             Lifeyear = as.factor(Lifeyear), 
-            Cohort, Year, Sex, Area, Pisc_mm, 
+            Cohort, Year, Sex, Area, Capture_loc, Pisc_mm, 
             Genotype = as.factor(Genotype), 
             GIndex) %>%
   drop_na() %>%
@@ -1674,6 +1675,14 @@ rm(list = ls())
 Growthdata <- fread("Data/Pike/Pikedata_agespecmodel.csv")
 LUNGdata <- fread("Data/Environment/Lungdata-monthly-means.csv")
 GDDdata <- fread("Data/Environment/GDD_Bodden.csv")
+
+#Align Capture locations with LUNgdata
+Growthdata <- Growthdata %>%
+  mutate(Area2 = Area,
+         Area = case_when(Capture_loc %in% c("KB", "SB", "VB") ~ "WRB",
+                          Capture_loc %in% c("BEZ", "WB", "BEG", "GJB", "NRB") ~ "NRB",
+                          Capture_loc == "DZB" ~ "BAT",
+                          TRUE ~ Capture_loc))
 
 #Make yearly means LUNGdata
 LUNGdata_years <- LUNGdata %>%
@@ -1704,7 +1713,7 @@ Growthdata3 <- Growthdata2 %>%
             Cohort = as.factor(Cohort),
             Year,
             Sex = as.factor(Sex),
-            Area = as.factor(Area),
+            Area = as.factor(Area2),
             Pisc_mm,
             Genotype = as.factor(Genotype),
             GIndex, Secchi_m, Chla_mg_m3, Total_N, Total_P, SAL_PSU, SAL_SD, Months_highSAL, WT_Celsius, GDD)%>%
@@ -1902,6 +1911,13 @@ loo_compare(loo_base1, loo_base2, loo_base3)
 rm(list = ls())
 
 Growthdata <- fread("Data/Pike/Pikedata_agespecmodel.csv")
+
+Growthdata <- Growthdata %>%
+  mutate(Sample = as.factor(Sample),
+         Lifeyear = as.factor(Lifeyear),
+         Sex = as.factor(Sex),
+         Area = as.factor(Area),
+         Genotype = as.factor(Genotype))
 
 #check sample size
 
